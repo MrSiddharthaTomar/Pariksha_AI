@@ -8,6 +8,7 @@ import { ArrowLeft, LogIn, Loader2 } from "lucide-react";
 import WebcamCapture from "@/components/WebcamCapture";
 import { useToast } from "@/hooks/use-toast";
 import { getApiUrl } from "@/lib/api-config";
+import { ensureSingleRole } from "@/lib/auth";
 
 const ExaminerLogin = () => {
   const navigate = useNavigate();

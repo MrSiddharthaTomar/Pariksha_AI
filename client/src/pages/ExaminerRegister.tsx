@@ -8,6 +8,7 @@ import { ArrowLeft, ShieldCheck, Loader2 } from "lucide-react";
 import WebcamCapture from "@/components/WebcamCapture";
 import { useToast } from "@/hooks/use-toast";
 import { getApiUrl } from "@/lib/api-config";
+import { ensureSingleRole } from "@/lib/auth";
 
 const ExaminerRegister = () => {
   const navigate = useNavigate();
@@ -57,6 +58,14 @@ const ExaminerRegister = () => {
 
       if (response.ok) {
         const data = await response.json();
+
+        // Enforce single role per browser
+        if (!ensureSingleRole('examiner')) {
+          setIsLoading(false);
+          toast({ title: 'Aborted', description: 'Registration cancelled to preserve existing role.' });
+          return;
+        }
+
         // If registration returns a token, store it and navigate to dashboard
         if (data.token) {
           localStorage.setItem('token', data.token);

@@ -8,6 +8,7 @@ import { ArrowLeft, UserPlus, Loader2 } from "lucide-react";
 import WebcamCapture from "@/components/WebcamCapture";
 import { useToast } from "@/hooks/use-toast";
 import { getApiUrl } from "@/lib/api-config";
+import { ensureSingleRole } from "@/lib/auth";
 
 const StudentRegister = () => {
   const navigate = useNavigate();
@@ -60,6 +61,14 @@ const StudentRegister = () => {
 
       if (response.ok) {
         const data = await response.json();
+
+        // Enforce single role per browser
+        if (!ensureSingleRole('student')) {
+          setIsLoading(false);
+          toast({ title: 'Aborted', description: 'Registration cancelled to preserve existing role.' });
+          return;
+        }
+
         // If registration returns a token, store it and navigate to student tests
         if (data.token) localStorage.setItem('token', data.token);
         if (data.user) localStorage.setItem('user', JSON.stringify(data.user));

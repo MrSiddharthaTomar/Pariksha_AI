@@ -8,6 +8,7 @@ import { ArrowLeft, LogIn, Loader2 } from "lucide-react";
 import WebcamCapture from "@/components/WebcamCapture";
 import { useToast } from "@/hooks/use-toast";
 import { getApiUrl } from "@/lib/api-config";
+import { ensureSingleRole } from "@/lib/auth";
 
 const StudentLogin = () => {
   const navigate = useNavigate();
@@ -41,6 +42,14 @@ const StudentLogin = () => {
 
       if (response.ok) {
         const data = await response.json();
+
+        // Enforce single role per browser
+        if (!ensureSingleRole('student')) {
+          setIsLoading(false);
+          toast({ title: 'Aborted', description: 'Login cancelled to preserve existing role.' });
+          return;
+        }
+
         // Store token & user info
         if (data.token) {
           localStorage.setItem('token', data.token);
