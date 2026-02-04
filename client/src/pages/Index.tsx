@@ -31,7 +31,7 @@ const Index = () => {
             </div>
           </div>
           <h1 className="text-5xl font-bold mb-4 bg-gradient-primary bg-clip-text text-transparent">
-            Pariksha Ai
+            Pariksha AI
           </h1>
           <p className="text-xl text-muted-foreground max-w-2xl mx-auto">
             Advanced AI-powered exam proctoring platform ensuring academic integrity
