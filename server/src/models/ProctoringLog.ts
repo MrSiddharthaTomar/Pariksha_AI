@@ -5,7 +5,8 @@ export type ProctoringLabel =
   | 'Multiple Faces'
   | 'No Person Visible'
   | 'Audio Detected'
-  | 'Looking Away';
+  | 'Looking Away'
+  | 'Multiple Monitors';
 
 export type ProctoringSeverity = 'low' | 'medium' | 'high';
 
@@ -37,7 +38,7 @@ const ProctoringLogSchema = new Schema<IProctoringLog>(
     },
     label: {
       type: String,
-      enum: ['Phone Detected', 'Multiple Faces', 'No Person Visible', 'Audio Detected', 'Looking Away'],
+      enum: ['Phone Detected', 'Multiple Faces', 'No Person Visible', 'Audio Detected', 'Looking Away', 'Multiple Monitors'],
       required: true,
     },
     severity: {

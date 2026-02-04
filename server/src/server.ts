@@ -1658,6 +1658,11 @@ app.post('/api/student/start-attempt', async (req: Request, res: Response) => {
       return res.status(409).json({ message: 'Test already submitted', error: 'TEST_ALREADY_SUBMITTED' });
     }
 
+    // Prevent start if the attempt was previously blocked due to policy violations
+    if (attempt && attempt.status === 'blocked') {
+      return res.status(403).json({ message: 'Attempt blocked due to policy violation (multiple monitors detected)', error: 'ATTEMPT_BLOCKED' });
+    }
+
     if (!attempt) {
       attempt = new ExamAttempt({
         testId,
@@ -1684,6 +1689,67 @@ app.post('/api/student/start-attempt', async (req: Request, res: Response) => {
     res.status(500).json({ message: 'Failed to start attempt', error: error?.message });
   }
 });
+
+// Endpoint to record multiple-monitor detection and block the attempt when necessary
+app.post('/api/student/multi-monitor-detected', async (req: Request, res: Response) => {
+  try {
+    if (mongoose.connection.readyState !== 1) {
+      return res.status(503).json({ message: 'Database connection not available. Please try again later.', error: 'DATABASE_UNAVAILABLE' });
+    }
+
+    let { studentId, testId } = req.body as any;
+    if (!studentId) {
+      const user = (req as any).user;
+      if (user && user.id) studentId = user.id;
+    }
+
+    if (!studentId || !testId) {
+      return res.status(400).json({ message: 'Missing required fields: studentId, testId', error: 'MISSING_FIELDS' });
+    }
+
+    // Verify test exists
+    const test = await Test.findById(testId);
+    if (!test) return res.status(404).json({ message: 'Test not found', error: 'TEST_NOT_FOUND' });
+
+    // Find or create an attempt and mark it blocked
+    let attempt = await ExamAttempt.findOne({ testId, studentId });
+    const now = new Date();
+
+    if (!attempt) {
+      attempt = new ExamAttempt({
+        testId,
+        studentId,
+        status: 'blocked',
+        totalScore: 0,
+        trustScore: 0,
+        totalViolations: 1,
+      });
+    } else {
+      // Increment violations and set blocked status
+      attempt.totalViolations = (attempt.totalViolations || 0) + 1;
+      attempt.trustScore = Math.max(0, (attempt.trustScore || 100) - 30);
+      attempt.status = 'blocked';
+    }
+
+    await attempt.save();
+
+    // Create a proctoring log for the examiner to review
+    const log = new ProctoringLog({
+      attemptId: attempt._id,
+      timestamp: now,
+      label: 'Multiple Monitors',
+      severity: 'high',
+    });
+
+    await log.save();
+
+    return res.status(403).json({ message: 'Multiple monitors detected — attempt blocked', error: 'MULTIPLE_MONITORS_DETECTED', attemptId: (attempt._id as any).toString() });
+  } catch (error: any) {
+    console.error('Multi-monitor detection error:', error);
+    return res.status(500).json({ message: 'Failed to record multi-monitor detection', error: error?.message });
+  }
+});
+
 
 // Used by StudentTest.tsx to submit answers and save recording
 app.post('/api/student/submit-test', async (req: Request, res: Response) => {

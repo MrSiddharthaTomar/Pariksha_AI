@@ -1,6 +1,6 @@
 import mongoose, { Document, Schema } from 'mongoose';
 
-export type ExamAttemptStatus = 'not-started' | 'in-progress' | 'submitted';
+export type ExamAttemptStatus = 'not-started' | 'in-progress' | 'submitted' | 'blocked';
 
 export interface IAnswer {
   questionId: mongoose.Types.ObjectId;
@@ -42,7 +42,7 @@ const ExamAttemptSchema = new Schema<IExamAttempt>(
     },
     status: {
       type: String,
-      enum: ['not-started', 'in-progress', 'submitted'],
+      enum: ['not-started', 'in-progress', 'submitted', 'blocked'],
       default: 'in-progress',
     },
     startedAt: {
