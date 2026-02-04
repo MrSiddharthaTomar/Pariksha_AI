@@ -115,6 +115,9 @@ CORS_ORIGIN=http://localhost:5173
 MONGODB_URI=mongodb://localhost:27017/pariksha_ai
 OPENAI_API_KEY=
 ANTHROPIC_API_KEY=
+JWT_SECRET=
+JWT_EXPIRES_IN=
+
 
 # CRITICAL: Point to your Python environment with ML dependencies installed
 # Windows (Conda):
