@@ -26,8 +26,8 @@ const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 const MONGODB_URI = process.env.MONGODB_URI;
 // JWT configuration
-const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-change-me';
-const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '8h';
+const JWT_SECRET = process.env.JWT_SECRET;
+const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN;
 
 console.log("LOOK HERE");
 console.log(MONGODB_URI);
@@ -53,8 +53,8 @@ interface StudentResult {
   id: number;
   name: string;
   email: string;
-  actualScore: number; 
-  trustScore: number; 
+  actualScore: number;
+  trustScore: number;
   violationsCount: number;
 }
 
@@ -83,7 +83,7 @@ const corsOptions = {
   origin: function (origin: string | undefined, callback: Function) {
     // Allow requests with no origin (like mobile apps or curl requests)
     if (!origin) return callback(null, true);
-    
+
     // Check if origin matches CORS_ORIGIN or allow localhost for development
     if (!CORS_ORIGIN || origin === CORS_ORIGIN || origin.includes('localhost')) {
       callback(null, true);
@@ -96,9 +96,9 @@ const corsOptions = {
   allowedHeaders: ['Content-Type', 'Authorization']
 };
 
-app.use(cors(corsOptions)); 
+app.use(cors(corsOptions));
 // Parses JSON bodies, increasing limit to handle base64 videos/audio
-app.use(bodyParser.json({ limit: '500mb' })); 
+app.use(bodyParser.json({ limit: '500mb' }));
 
 // --- Utility Functions ---
 const getNextId = (arr: any[]) => (arr.length ? Math.max(...arr.map(i => i.id)) + 1 : 1);
@@ -138,9 +138,9 @@ app.get('/api/load-models', async (req: Request, res: Response) => {
     await loadFaceModels();
     res.status(200).json({ message: 'Models loaded successfully' });
   } catch (error: any) {
-    res.status(500).json({ 
+    res.status(500).json({
       message: 'Failed to load models',
-      error: error.message 
+      error: error.message
     });
   }
 });
@@ -154,7 +154,7 @@ app.post('/api/auth/:role/register', async (req: Request, res: Response) => {
   try {
     // Check MongoDB connection
     if (mongoose.connection.readyState !== 1) {
-      return res.status(503).json({ 
+      return res.status(503).json({
         message: 'Database connection not available. Please try again later.',
         error: 'DATABASE_UNAVAILABLE'
       });
@@ -165,7 +165,7 @@ app.post('/api/auth/:role/register', async (req: Request, res: Response) => {
 
     // Validate input
     if (!fullName || !email || !password || !photo) {
-      return res.status(400).json({ 
+      return res.status(400).json({
         message: 'All fields are required.',
         error: 'MISSING_FIELDS'
       });
@@ -173,7 +173,7 @@ app.post('/api/auth/:role/register', async (req: Request, res: Response) => {
 
     // Validate role
     if (role !== 'student' && role !== 'examiner') {
-      return res.status(400).json({ 
+      return res.status(400).json({
         message: 'Invalid role. Must be "student" or "examiner".',
         error: 'INVALID_ROLE'
       });
@@ -182,7 +182,7 @@ app.post('/api/auth/:role/register', async (req: Request, res: Response) => {
     // Validate email format
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     if (!emailRegex.test(email)) {
-      return res.status(400).json({ 
+      return res.status(400).json({
         message: 'Please provide a valid email address.',
         error: 'INVALID_EMAIL'
       });
@@ -190,7 +190,7 @@ app.post('/api/auth/:role/register', async (req: Request, res: Response) => {
 
     // Validate password length
     if (password.length < 6) {
-      return res.status(400).json({ 
+      return res.status(400).json({
         message: 'Password must be at least 6 characters long.',
         error: 'INVALID_PASSWORD'
       });
@@ -199,7 +199,7 @@ app.post('/api/auth/:role/register', async (req: Request, res: Response) => {
     // Check if user already exists in MongoDB (email must be unique globally)
     const existingUser = await User.findOne({ email: email.toLowerCase() });
     if (existingUser) {
-      return res.status(409).json({ 
+      return res.status(409).json({
         message: `User with email ${email} already exists. Please use a different email.`,
         error: 'USER_EXISTS'
       });
@@ -235,40 +235,40 @@ app.post('/api/auth/:role/register', async (req: Request, res: Response) => {
     const token = generateJwtForUser(newUser);
 
     // Return success response (don't send password or face descriptor)
-    res.status(201).json({ 
-      message: 'Registration successful', 
+    res.status(201).json({
+      message: 'Registration successful',
       token,
-      user: { userId: (newUser._id as any).toString(), role: newUser.role, email: newUser.email }
+      user: { userId: (newUser._id as any).toString(), role: newUser.role, email: newUser.email, photo: newUser.photo }
     });
   } catch (error: any) {
     console.error('Registration error:', error);
-    
+
     // Handle duplicate key error (MongoDB unique constraint)
     if (error.code === 11000) {
-      return res.status(409).json({ 
+      return res.status(409).json({
         message: 'User with this email already exists for this role.',
         error: 'USER_EXISTS'
       });
     }
-    
+
     // Handle validation errors
     if (error.name === 'ValidationError') {
       const firstError = Object.values(error.errors)[0] as any;
-      return res.status(400).json({ 
+      return res.status(400).json({
         message: firstError?.message || 'Validation failed',
         error: 'VALIDATION_ERROR'
       });
     }
-    
+
     // Handle MongoDB connection errors
     if (error.name === 'MongoServerError' || error.name === 'MongoNetworkError') {
-      return res.status(503).json({ 
+      return res.status(503).json({
         message: 'Database connection error. Please try again later.',
         error: 'DATABASE_ERROR'
       });
     }
-    
-    res.status(500).json({ 
+
+    res.status(500).json({
       message: 'Registration failed. Please try again.',
       error: 'INTERNAL_ERROR'
     });
@@ -280,7 +280,7 @@ app.post('/api/auth/:role/login', async (req: Request, res: Response) => {
   try {
     // Check MongoDB connection
     if (mongoose.connection.readyState !== 1) {
-      return res.status(503).json({ 
+      return res.status(503).json({
         message: 'Database connection not available. Please try again later.',
         error: 'DATABASE_UNAVAILABLE'
       });
@@ -291,7 +291,7 @@ app.post('/api/auth/:role/login', async (req: Request, res: Response) => {
 
     // Validate input
     if (!email || !password || !photo) {
-      return res.status(400).json({ 
+      return res.status(400).json({
         message: 'Email, password, and photo are required.',
         error: 'MISSING_FIELDS'
       });
@@ -299,7 +299,7 @@ app.post('/api/auth/:role/login', async (req: Request, res: Response) => {
 
     // Validate role
     if (role !== 'student' && role !== 'examiner') {
-      return res.status(400).json({ 
+      return res.status(400).json({
         message: 'Invalid role. Must be "student" or "examiner".',
         error: 'INVALID_ROLE'
       });
@@ -307,9 +307,9 @@ app.post('/api/auth/:role/login', async (req: Request, res: Response) => {
 
     // Find user in MongoDB
     const user = await User.findOne({ email: email.toLowerCase().trim(), role });
-    
+
     if (!user) {
-      return res.status(401).json({ 
+      return res.status(401).json({
         message: 'Invalid email or password.',
         error: 'INVALID_CREDENTIALS'
       });
@@ -317,9 +317,9 @@ app.post('/api/auth/:role/login', async (req: Request, res: Response) => {
 
     // Verify password using bcrypt comparison
     const isPasswordValid = await user.comparePassword(password);
-    
+
     if (!isPasswordValid) {
-      return res.status(401).json({ 
+      return res.status(401).json({
         message: 'Invalid email or password.',
         error: 'INVALID_CREDENTIALS'
       });
@@ -353,32 +353,81 @@ app.post('/api/auth/:role/login', async (req: Request, res: Response) => {
         error: 'FACE_MISMATCH'
       });
     }
-    
+
     // Success - return user info (without password or face descriptor) and a signed JWT
     const token = generateJwtForUser(user);
-    res.status(200).json({ 
-      message: 'Authentication Successful!', 
+    res.status(200).json({
+      message: 'Authentication Successful!',
       token,
-      user: { 
-        id: (user._id as any).toString(), 
-        name: user.fullName, 
+      user: {
+        id: (user._id as any).toString(),
+        name: user.fullName,
         role: user.role,
-        email: user.email
-      } 
+        email: user.email,
+        photo: user.photo
+      }
     });
   } catch (error: any) {
     console.error('Login error:', error);
-    
+
     // Handle MongoDB connection errors
     if (error.name === 'MongoServerError' || error.name === 'MongoNetworkError') {
-      return res.status(503).json({ 
+      return res.status(503).json({
         message: 'Database connection error. Please try again later.',
         error: 'DATABASE_ERROR'
       });
     }
-    
-    res.status(500).json({ 
+
+    res.status(500).json({
       message: 'Login failed. Please try again.',
+      error: 'INTERNAL_ERROR'
+    });
+  }
+});
+
+
+// Update profile image (photo) for authenticated user
+app.put('/api/auth/profile-image', authenticateJWT, async (req: Request, res: Response) => {
+  try {
+    if (mongoose.connection.readyState !== 1) {
+      return res.status(503).json({
+        message: 'Database connection not available. Please try again later.',
+        error: 'DATABASE_UNAVAILABLE'
+      });
+    }
+
+    const userId = (req as any).user.id;
+    const { photo } = req.body;
+
+    if (!photo) {
+      return res.status(400).json({
+        message: 'Photo is required.',
+        error: 'MISSING_FIELDS'
+      });
+    }
+
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ message: 'User not found.' });
+    }
+
+    user.photo = photo;
+    await user.save();
+
+    res.status(200).json({
+      message: 'Profile photo updated successfully',
+      user: {
+        id: (user._id as any).toString(),
+        name: user.fullName,
+        role: user.role,
+        email: user.email,
+        photo: user.photo
+      }
+    });
+  } catch (error: any) {
+    console.error('Profile image update error:', error);
+    res.status(500).json({
+      message: 'Failed to update profile photo.',
       error: 'INTERNAL_ERROR'
     });
   }
@@ -957,136 +1006,136 @@ app.put('/api/examiner/tests/:testId', async (req: Request, res: Response) => {
 
 // AI generation API for CreateTest.tsx
 app.post('/api/examiner/ai-generate', async (req: Request, res: Response) => {
-    const { aiPrompt } = req.body;
+  const { aiPrompt } = req.body;
 
-    if (!aiPrompt || aiPrompt.trim().length === 0) {
-        return res.status(400).json({ message: 'AI prompt is required' });
-    }
+  if (!aiPrompt || aiPrompt.trim().length === 0) {
+    return res.status(400).json({ message: 'AI prompt is required' });
+  }
 
-    // Check if any AI API key is available
-    if (!OPENAI_API_KEY && !ANTHROPIC_API_KEY) {
-        // Fallback to mock response if no API keys are configured
-        console.warn('No AI API keys configured. Using mock response.');
-        const mockQuestions: Question[] = [
-            { id: 1, question: "AI-Generated Q1: What is the derivative of x^2?", options: ["x", "2x", "2", "x/2"], correctAnswer: 1 },
-            { id: 2, question: "AI-Generated Q2: Solve ∫(1/x) dx.", options: ["e^x", "x^2", "ln|x|", "1"], correctAnswer: 2 },
-        ];
-        
-        setTimeout(() => {
-            res.status(200).json({ 
-                message: "AI generation complete (mock mode). Review questions below.", 
-                questions: mockQuestions 
-            });
-        }, 1500);
-        return;
-    }
+  // Check if any AI API key is available
+  if (!OPENAI_API_KEY && !ANTHROPIC_API_KEY) {
+    // Fallback to mock response if no API keys are configured
+    console.warn('No AI API keys configured. Using mock response.');
+    const mockQuestions: Question[] = [
+      { id: 1, question: "AI-Generated Q1: What is the derivative of x^2?", options: ["x", "2x", "2", "x/2"], correctAnswer: 1 },
+      { id: 2, question: "AI-Generated Q2: Solve ∫(1/x) dx.", options: ["e^x", "x^2", "ln|x|", "1"], correctAnswer: 2 },
+    ];
 
-    try {
-        let questions: Question[] = [];
+    setTimeout(() => {
+      res.status(200).json({
+        message: "AI generation complete (mock mode). Review questions below.",
+        questions: mockQuestions
+      });
+    }, 1500);
+    return;
+  }
 
-        // Try OpenAI first if available
-        if (OPENAI_API_KEY) {
-            try {
-                const response = await fetch('https://api.openai.com/v1/chat/completions', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'Authorization': `Bearer ${OPENAI_API_KEY}`
-                    },
-                    body: JSON.stringify({
-                        model: 'gpt-4',
-                        messages: [
-                            {
-                                role: 'system',
-                                content: 'You are an expert test question generator. Generate multiple choice questions in JSON format. Return only valid JSON with this structure: [{"question": "question text", "options": ["option1", "option2", "option3", "option4"], "correctAnswer": 0}] where correctAnswer is the index (0-3).'
-                            },
-                            {
-                                role: 'user',
-                                content: aiPrompt
-                            }
-                        ],
-                        temperature: 0.7,
-                        max_tokens: 2000
-                    })
-                });
+  try {
+    let questions: Question[] = [];
 
-                if (response.ok) {
-                    const data = await response.json();
-                    const content = data.choices[0]?.message?.content || '';
-                    // Try to parse JSON from response
-                    const jsonMatch = content.match(/\[[\s\S]*\]/);
-                    if (jsonMatch) {
-                        const parsed = JSON.parse(jsonMatch[0]);
-                        questions = parsed.map((q: any, idx: number) => ({
-                            id: idx + 1,
-                            question: q.question || '',
-                            options: q.options || ['', '', '', ''],
-                            correctAnswer: q.correctAnswer || 0
-                        }));
-                    }
-                }
-            } catch (error) {
-                console.error('OpenAI API error:', error);
-            }
-        }
-
-        // Fallback to Anthropic if OpenAI failed or not available
-        if (questions.length === 0 && ANTHROPIC_API_KEY) {
-            try {
-                const response = await fetch('https://api.anthropic.com/v1/messages', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'x-api-key': ANTHROPIC_API_KEY,
-                        'anthropic-version': '2023-06-01'
-                    },
-                    body: JSON.stringify({
-                        model: 'claude-3-5-sonnet-20241022',
-                        max_tokens: 2000,
-                        messages: [
-                            {
-                                role: 'user',
-                                content: `Generate multiple choice test questions based on: ${aiPrompt}. Return JSON array format: [{"question": "text", "options": ["opt1", "opt2", "opt3", "opt4"], "correctAnswer": 0}]`
-                            }
-                        ]
-                    })
-                });
-
-                if (response.ok) {
-                    const data = await response.json();
-                    const content = data.content[0]?.text || '';
-                    const jsonMatch = content.match(/\[[\s\S]*\]/);
-                    if (jsonMatch) {
-                        const parsed = JSON.parse(jsonMatch[0]);
-                        questions = parsed.map((q: any, idx: number) => ({
-                            id: idx + 1,
-                            question: q.question || '',
-                            options: q.options || ['', '', '', ''],
-                            correctAnswer: q.correctAnswer || 0
-                        }));
-                    }
-                }
-            } catch (error) {
-                console.error('Anthropic API error:', error);
-            }
-        }
-
-        // If still no questions, return mock
-        if (questions.length === 0) {
-            questions = [
-                { id: 1, question: "AI-Generated Q1: What is the derivative of x^2?", options: ["x", "2x", "2", "x/2"], correctAnswer: 1 },
-                { id: 2, question: "AI-Generated Q2: Solve ∫(1/x) dx.", options: ["e^x", "x^2", "ln|x|", "1"], correctAnswer: 2 },
-            ];
-        }
-
-        res.status(200).json({ 
-            message: "AI generation complete. Review questions below.", 
-            questions: questions 
+    // Try OpenAI first if available
+    if (OPENAI_API_KEY) {
+      try {
+        const response = await fetch('https://api.openai.com/v1/chat/completions', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${OPENAI_API_KEY}`
+          },
+          body: JSON.stringify({
+            model: 'gpt-4',
+            messages: [
+              {
+                role: 'system',
+                content: 'You are an expert test question generator. Generate multiple choice questions in JSON format. Return only valid JSON with this structure: [{"question": "question text", "options": ["option1", "option2", "option3", "option4"], "correctAnswer": 0}] where correctAnswer is the index (0-3).'
+              },
+              {
+                role: 'user',
+                content: aiPrompt
+              }
+            ],
+            temperature: 0.7,
+            max_tokens: 2000
+          })
         });
-    } catch (error) {
-        console.error('AI generation error:', error);
-        res.status(500).json({ message: 'Failed to generate questions. Please try again.' });
+
+        if (response.ok) {
+          const data = await response.json();
+          const content = data.choices[0]?.message?.content || '';
+          // Try to parse JSON from response
+          const jsonMatch = content.match(/\[[\s\S]*\]/);
+          if (jsonMatch) {
+            const parsed = JSON.parse(jsonMatch[0]);
+            questions = parsed.map((q: any, idx: number) => ({
+              id: idx + 1,
+              question: q.question || '',
+              options: q.options || ['', '', '', ''],
+              correctAnswer: q.correctAnswer || 0
+            }));
+          }
+        }
+      } catch (error) {
+        console.error('OpenAI API error:', error);
+      }
     }
+
+    // Fallback to Anthropic if OpenAI failed or not available
+    if (questions.length === 0 && ANTHROPIC_API_KEY) {
+      try {
+        const response = await fetch('https://api.anthropic.com/v1/messages', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-api-key': ANTHROPIC_API_KEY,
+            'anthropic-version': '2023-06-01'
+          },
+          body: JSON.stringify({
+            model: 'claude-3-5-sonnet-20241022',
+            max_tokens: 2000,
+            messages: [
+              {
+                role: 'user',
+                content: `Generate multiple choice test questions based on: ${aiPrompt}. Return JSON array format: [{"question": "text", "options": ["opt1", "opt2", "opt3", "opt4"], "correctAnswer": 0}]`
+              }
+            ]
+          })
+        });
+
+        if (response.ok) {
+          const data = await response.json();
+          const content = data.content[0]?.text || '';
+          const jsonMatch = content.match(/\[[\s\S]*\]/);
+          if (jsonMatch) {
+            const parsed = JSON.parse(jsonMatch[0]);
+            questions = parsed.map((q: any, idx: number) => ({
+              id: idx + 1,
+              question: q.question || '',
+              options: q.options || ['', '', '', ''],
+              correctAnswer: q.correctAnswer || 0
+            }));
+          }
+        }
+      } catch (error) {
+        console.error('Anthropic API error:', error);
+      }
+    }
+
+    // If still no questions, return mock
+    if (questions.length === 0) {
+      questions = [
+        { id: 1, question: "AI-Generated Q1: What is the derivative of x^2?", options: ["x", "2x", "2", "x/2"], correctAnswer: 1 },
+        { id: 2, question: "AI-Generated Q2: Solve ∫(1/x) dx.", options: ["e^x", "x^2", "ln|x|", "1"], correctAnswer: 2 },
+      ];
+    }
+
+    res.status(200).json({
+      message: "AI generation complete. Review questions below.",
+      questions: questions
+    });
+  } catch (error) {
+    console.error('AI generation error:', error);
+    res.status(500).json({ message: 'Failed to generate questions. Please try again.' });
+  }
 });
 
 // Fetches results for a specific test (used by TestResults.tsx)
@@ -1234,7 +1283,7 @@ app.get('/api/student/tests', async (req: Request, res: Response) => {
   try {
     // Check MongoDB connection
     if (mongoose.connection.readyState !== 1) {
-      return res.status(503).json({ 
+      return res.status(503).json({
         message: 'Database connection not available. Please try again later.',
         error: 'DATABASE_UNAVAILABLE'
       });
@@ -1243,7 +1292,7 @@ app.get('/api/student/tests', async (req: Request, res: Response) => {
     let { studentId, email } = req.query as { studentId?: string; email?: string };
 
     if (!studentId && !email) {
-      return res.status(400).json({ 
+      return res.status(400).json({
         message: 'Student ID or email is required',
         error: 'MISSING_STUDENT_IDENTIFIER'
       });
@@ -1308,7 +1357,7 @@ app.get('/api/student/tests', async (req: Request, res: Response) => {
     });
   } catch (error: any) {
     console.error('Get student tests error:', error);
-    res.status(500).json({ 
+    res.status(500).json({
       message: 'Failed to fetch tests. Please try again.',
       error: 'INTERNAL_ERROR'
     });
@@ -1320,7 +1369,7 @@ app.get('/api/student/test/:testId', async (req: Request, res: Response) => {
   try {
     // Check MongoDB connection
     if (mongoose.connection.readyState !== 1) {
-      return res.status(503).json({ 
+      return res.status(503).json({
         message: 'Database connection not available. Please try again later.',
         error: 'DATABASE_UNAVAILABLE'
       });
@@ -1336,7 +1385,7 @@ app.get('/api/student/test/:testId', async (req: Request, res: Response) => {
     }
 
     if (!studentId && !email) {
-      return res.status(400).json({ 
+      return res.status(400).json({
         message: 'Student ID or email is required',
         error: 'MISSING_STUDENT_IDENTIFIER'
       });
@@ -1348,7 +1397,7 @@ app.get('/api/student/test/:testId', async (req: Request, res: Response) => {
         email = user.email;
       }
     }
-    
+
     const orConditions: any[] = [];
     if (studentId) {
       orConditions.push({ allowedStudents: studentId });
@@ -1365,7 +1414,7 @@ app.get('/api/student/test/:testId', async (req: Request, res: Response) => {
     });
 
     if (!test) {
-      return res.status(404).json({ 
+      return res.status(404).json({
         message: 'Test not found or you are not enrolled in this test',
         error: 'TEST_NOT_FOUND'
       });
@@ -1448,7 +1497,7 @@ app.get('/api/student/test/:testId', async (req: Request, res: Response) => {
     });
   } catch (error: any) {
     console.error('Get test error:', error);
-    res.status(500).json({ 
+    res.status(500).json({
       message: 'Failed to fetch test. Please try again.',
       error: 'INTERNAL_ERROR'
     });
@@ -1813,7 +1862,7 @@ app.post('/api/student/submit-test', async (req: Request, res: Response) => {
         { _id: { $in: test.questionIds } },
         { type: 1, correctAnswer: 1, marks: 1 }
       ).lean(); // Use lean() for read-only data (faster queries)
-      
+
       const questionMap = new Map(
         questionDocs.map((doc) => [(doc._id as any).toString(), doc])
       );

@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { ArrowLeft, Clock, FileText, Loader2 } from "lucide-react";
+import { ArrowLeft, Clock, FileText, Loader2, UserCircle } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { getApiUrl, authFetch } from "@/lib/api-config";
 
@@ -28,7 +28,7 @@ const StudentTestList = () => {
     const fetchTests = async () => {
       const studentId = localStorage.getItem('studentId');
       const studentEmail = localStorage.getItem('studentEmail');
-      
+
       if (!studentId && !studentEmail) {
         toast({
           title: "Error",
@@ -49,7 +49,7 @@ const StudentTestList = () => {
         }
 
         const response = await authFetch(getApiUrl(`/api/student/tests?${queryParams.toString()}`));
-        
+
         if (response.ok) {
           const data = await response.json();
           setTests(data.tests || []);
@@ -115,9 +115,9 @@ const StudentTestList = () => {
   return (
     <div className="min-h-screen bg-gradient-hero p-4">
       <div className="container max-w-6xl mx-auto py-6">
-        <div className="mb-6">
-          <Button 
-            variant="ghost" 
+        <div className="mb-6 relative">
+          <Button
+            variant="ghost"
             onClick={() => navigate('/')}
             className="mb-4"
           >
@@ -128,6 +128,14 @@ const StudentTestList = () => {
           <p className="text-muted-foreground">
             Select a test to begin. Make sure you're ready before starting.
           </p>
+          <Button
+            className="absolute top-6 right-0"
+            variant="outline"
+            onClick={() => navigate('/student/profile')}
+          >
+            <UserCircle className="mr-2 h-4 w-4" />
+            My Profile
+          </Button>
         </div>
 
         {isLoading ? (
@@ -155,44 +163,44 @@ const StudentTestList = () => {
               const isSubmitted = test.status === 'submitted';
 
               return (
-              <Card key={test.id} className="hover:shadow-lg transition-shadow">
-                <CardHeader>
-                  <div className="flex items-start justify-between mb-2">
-                    <CardTitle className="text-lg">{test.name}</CardTitle>
-                    <Badge 
-                      variant={test.status === 'active' ? 'default' : 'outline'}
+                <Card key={test.id} className="hover:shadow-lg transition-shadow">
+                  <CardHeader>
+                    <div className="flex items-start justify-between mb-2">
+                      <CardTitle className="text-lg">{test.name}</CardTitle>
+                      <Badge
+                        variant={test.status === 'active' ? 'default' : 'outline'}
+                      >
+                        {test.status}
+                      </Badge>
+                    </div>
+                    {test.description && (
+                      <CardDescription>{test.description}</CardDescription>
+                    )}
+                  </CardHeader>
+                  <CardContent className="space-y-4">
+                    <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                      <Clock className="w-4 h-4" />
+                      <span>{test.duration} minutes</span>
+                    </div>
+                    <div className="text-sm text-muted-foreground">
+                      <strong>Opens:</strong> {formatDate(test.startTime)}
+                    </div>
+                    <div className="text-sm text-muted-foreground">
+                      <strong>Closes:</strong> {formatDate(test.endTime)}
+                    </div>
+                    <div className="text-sm text-muted-foreground">
+                      <strong>Questions:</strong> {test.questionCount}
+                    </div>
+                    <Button
+                      className="w-full"
+                      onClick={() => handleStartTest(test)}
+                      disabled={isSubmitted || !isActive}
                     >
-                      {test.status}
-                    </Badge>
-                  </div>
-                  {test.description && (
-                    <CardDescription>{test.description}</CardDescription>
-                  )}
-                </CardHeader>
-                <CardContent className="space-y-4">
-                  <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                    <Clock className="w-4 h-4" />
-                    <span>{test.duration} minutes</span>
-                  </div>
-                  <div className="text-sm text-muted-foreground">
-                    <strong>Opens:</strong> {formatDate(test.startTime)}
-                  </div>
-                  <div className="text-sm text-muted-foreground">
-                    <strong>Closes:</strong> {formatDate(test.endTime)}
-                  </div>
-                  <div className="text-sm text-muted-foreground">
-                    <strong>Questions:</strong> {test.questionCount}
-                  </div>
-                  <Button 
-                    className="w-full" 
-                    onClick={() => handleStartTest(test)}
-                    disabled={isSubmitted || !isActive}
-                  >
-                    {isSubmitted ? 'Already Submitted' : isActive ? 'Start Test' : 'Not Active'}
-                  </Button>
-                </CardContent>
-              </Card>
-            );
+                      {isSubmitted ? 'Already Submitted' : isActive ? 'Start Test' : 'Not Active'}
+                    </Button>
+                  </CardContent>
+                </Card>
+              );
             })}
           </div>
         )}

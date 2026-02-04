@@ -16,6 +16,8 @@ import CreateTest from "./pages/CreateTest";
 import ReviewViolations from "./pages/ReviewViolations";
 import TestResults from "./pages/TestResults";
 import StudentReport from "./pages/StudentReport";
+import StudentProfile from "./pages/StudentProfile";
+import ExaminerProfile from "./pages/ExaminerProfile";
 import RequireAuth from "./components/RequireAuth";
 import NotFound from "./pages/NotFound";
 
@@ -43,6 +45,8 @@ const App = () => (
           <Route path="/examiner/ReviewViolations/:testId" element={<RequireAuth role="examiner"><ReviewViolations /></RequireAuth>} />
           <Route path="/examiner/results/:testId" element={<RequireAuth role="examiner"><TestResults /></RequireAuth>} />
           <Route path="/examiner/report/:studentId/:testId" element={<RequireAuth role="examiner"><StudentReport /></RequireAuth>} />
+          <Route path="/student/profile" element={<RequireAuth role="student"><StudentProfile /></RequireAuth>} />
+          <Route path="/examiner/profile" element={<RequireAuth role="examiner"><ExaminerProfile /></RequireAuth>} />
           {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
           <Route path="*" element={<NotFound />} />
         </Routes>

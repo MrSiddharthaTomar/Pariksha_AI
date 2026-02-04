@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Calendar, FileText, Plus, BarChart3, Users, LogOut, Trash, Edit, Eye } from "lucide-react";
+import { Calendar, FileText, Plus, BarChart3, Users, LogOut, Trash, Edit, Eye, UserCircle } from "lucide-react";
 import { getApiUrl, authFetch } from "@/lib/api-config";
 import { useToast } from "@/hooks/use-toast";
 
@@ -129,10 +129,16 @@ const ExaminerDashboard = () => {
               <h1 className="text-2xl font-bold">Examiner Dashboard</h1>
               <p className="text-muted-foreground">Manage tests and monitor students</p>
             </div>
-            <Button variant="outline" onClick={() => { localStorage.removeItem('token'); localStorage.removeItem('user'); navigate('/'); }}>
-              <LogOut className="mr-2 h-4 w-4" />
-              Logout
-            </Button>
+            <div className="flex items-center gap-2">
+              <Button variant="ghost" onClick={() => navigate('/examiner/profile')}>
+                <UserCircle className="mr-2 h-4 w-4" />
+                Profile
+              </Button>
+              <Button variant="outline" onClick={() => { localStorage.removeItem('token'); localStorage.removeItem('user'); navigate('/'); }}>
+                <LogOut className="mr-2 h-4 w-4" />
+                Logout
+              </Button>
+            </div>
           </div>
         </div>
       </div>
@@ -259,8 +265,8 @@ const ExaminerDashboard = () => {
                   else displayStatus = 'active';
 
                   return (
-                    <div 
-                      key={test.id} 
+                    <div
+                      key={test.id}
                       className="flex items-center justify-between p-4 border rounded-lg hover:bg-muted/50 cursor-pointer transition-colors"
                       onClick={() => displayStatus === 'completed' && navigate(`/examiner/results/${test.id}`)}
                     >
