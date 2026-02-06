@@ -118,6 +118,7 @@ ANTHROPIC_API_KEY=
 JWT_SECRET=
 JWT_EXPIRES_IN=
 
+
 # CRITICAL: Point to your Python environment with ML dependencies installed
 # Windows (Conda):
 # PROCTORING_PYTHON=C:\Users\your-username\anaconda3\envs\pariksha-ai\python.exe

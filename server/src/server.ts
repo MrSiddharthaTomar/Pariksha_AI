@@ -26,8 +26,8 @@ const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 const MONGODB_URI = process.env.MONGODB_URI;
 // JWT configuration
-const JWT_SECRET = process.env.JWT_SECRET;
-const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN;
+const JWT_SECRET = process.env.JWT_SECRET || 'change later';
+const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '1hr';
 
 console.log("LOOK HERE");
 console.log(MONGODB_URI);
