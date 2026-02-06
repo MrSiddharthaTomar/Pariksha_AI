@@ -26,11 +26,9 @@ const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 const MONGODB_URI = process.env.MONGODB_URI;
 // JWT configuration
-const JWT_SECRET = process.env.JWT_SECRET || 'change later';
-const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '1hr';
+const JWT_SECRET = process.env.JWT_SECRET!;
+const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN;
 
-console.log("LOOK HERE");
-console.log(MONGODB_URI);
 
 // --- Mock Database (Simulating data storage) ---
 interface Question {
@@ -116,7 +114,7 @@ const authenticateJWT = (req: Request, res: Response, next: Function) => {
   }
   const token = authHeader.split(' ')[1];
   try {
-    const decoded = jwt.verify(token, JWT_SECRET as Secret) as any;
+    const decoded = jwt.verify(token, JWT_SECRET) as any;
     // attach to request
     (req as any).user = decoded;
     next();
