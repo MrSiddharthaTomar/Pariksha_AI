@@ -12,11 +12,19 @@ import { ArrowLeft, Sparkles, Plus, Trash } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { getApiUrl, authFetch } from "@/lib/api-config";
 
+interface TestCase {
+  input: string;
+  output: string;
+}
+
 interface Question {
   id: number;
+  type: 'mcq' | 'coding';
   question: string;
-  options: string[];
-  correctAnswer: number;
+  options: string[]; // for MCQ
+  correctAnswer: number; // for MCQ
+  codingStarterCode?: string;
+  codingTestCases?: TestCase[];
 }
 
 const CreateTest = () => {
@@ -28,7 +36,15 @@ const CreateTest = () => {
   const [testName, setTestName] = useState('');
   const [aiPrompt, setAiPrompt] = useState('');
   const [questions, setQuestions] = useState<Question[]>([
-    { id: 1, question: '', options: ['', '', '', ''], correctAnswer: 0 }
+    {
+      id: 1,
+      type: 'mcq',
+      question: '',
+      options: ['', '', '', ''],
+      correctAnswer: 0,
+      codingStarterCode: '',
+      codingTestCases: [{ input: '', output: '' }]
+    }
   ]);
   const [duration, setDuration] = useState<number>(60);
   const [startTime, setStartTime] = useState<string>('');
@@ -81,7 +97,15 @@ const CreateTest = () => {
         }
         setAllowedStudentsInput((data.allowedStudents || []).join(', '));
         if (Array.isArray(data.questions)) {
-          setQuestions(data.questions.map((q: any, idx: number) => ({ id: idx + 1, question: q.question || q.questionText || '', options: q.options || ['', '', '', ''], correctAnswer: typeof q.correctAnswer === 'number' ? q.correctAnswer : 0 })));
+          setQuestions(data.questions.map((q: any, idx: number) => ({
+            id: idx + 1,
+            type: q.type || 'mcq',
+            question: q.question || q.questionText || '',
+            options: q.options || ['', '', '', ''],
+            correctAnswer: typeof q.correctAnswer === 'number' ? q.correctAnswer : 0,
+            codingStarterCode: q.codingStarterCode || '',
+            codingTestCases: q.codingTestCases || [{ input: '', output: '' }]
+          })));
         }
       } catch (err: any) {
         toast({ title: 'Error', description: (err && err.message) ? `Failed to fetch test: ${err.message}` : 'Failed to fetch test for editing', variant: 'destructive' });
@@ -107,17 +131,28 @@ const CreateTest = () => {
     }
     setAllowedStudentsInput((prefill.allowedStudents || []).join(', '));
     // show an empty question for the user to edit
-    setQuestions([{ id: 1, question: '', options: ['', ''], correctAnswer: 0 }]);
+    setQuestions([{
+      id: 1,
+      type: 'mcq',
+      question: '',
+      options: ['', '', '', ''],
+      correctAnswer: 0,
+      codingStarterCode: '',
+      codingTestCases: [{ input: '', output: '' }]
+    }]);
 
     toast({ title: 'Prefill loaded', description: 'Schedule details were prefilled. Add questions and save to create the test.' });
   }, [location, testId]);
 
   const addQuestion = () => {
-    setQuestions([...questions, { 
-      id: questions.length + 1, 
-      question: '', 
-      options: ['', '', '', ''], 
-      correctAnswer: 0 
+    setQuestions([...questions, {
+      id: questions.length + 1,
+      type: 'mcq',
+      question: '',
+      options: ['', '', '', ''],
+      correctAnswer: 0,
+      codingStarterCode: '',
+      codingTestCases: [{ input: '', output: '' }]
     }]);
   };
 
@@ -204,7 +239,7 @@ const CreateTest = () => {
       title: "Generating Test",
       description: "AI is creating your test questions...",
     });
-    
+
     try {
       const response = await authFetch(getApiUrl('/api/examiner/ai-generate'), {
         method: 'POST',
@@ -251,17 +286,33 @@ const CreateTest = () => {
       return;
     }
 
-    // Validate questions (ensure question text and at least two non-empty options for MCQ)
-    const sanitizedQuestions = questions.map((q) => ({
-      ...q,
-      question: (q.question || '').toString().trim(),
-      options: Array.isArray(q.options) ? q.options.map((o: any) => (o || '').toString().trim()).filter(Boolean) : [],
-    })).filter((q) => q.question && (q.options.length >= 2));
+    // Validate questions
+    const sanitizedQuestions = questions.map((q) => {
+      if (q.type === 'coding') {
+        const tests = (q.codingTestCases || []).filter(t => t.input.trim() || t.output.trim());
+        return {
+          ...q,
+          question: (q.question || '').toString().trim(),
+          codingTestCases: tests.length > 0 ? tests : []
+        };
+      } else {
+        // MCQ
+        return {
+          ...q,
+          question: (q.question || '').toString().trim(),
+          options: Array.isArray(q.options) ? q.options.map((o: any) => (o || '').toString().trim()).filter(Boolean) : [],
+        };
+      }
+    }).filter((q) => {
+      if (!q.question) return false;
+      if (q.type === 'mcq') return q.options.length >= 2;
+      return true; // coding questions without test cases are technically valid but maybe warn?
+    });
 
     if (sanitizedQuestions.length === 0) {
       toast({
         title: "Questions Required",
-        description: "Please add at least one valid question with two or more options",
+        description: "Please add valid questions. MCQs need 2+ options.",
         variant: "destructive",
       });
       return;
@@ -342,7 +393,7 @@ const CreateTest = () => {
           <CardContent className="space-y-6">
             <div className="space-y-2">
               <Label htmlFor="testName">Test Name</Label>
-              <Input 
+              <Input
                 id="testName"
                 placeholder="e.g., Mathematics Final Exam"
                 value={testName}
@@ -385,7 +436,7 @@ const CreateTest = () => {
               <div className="space-y-4">
                 <div className="space-y-2">
                   <Label htmlFor="aiPrompt">Describe Your Test</Label>
-                  <Textarea 
+                  <Textarea
                     id="aiPrompt"
                     placeholder="E.g., Create 10 multiple choice questions on calculus, focusing on derivatives and integrals. Include difficulty levels from easy to hard."
                     value={aiPrompt}
@@ -430,8 +481,8 @@ const CreateTest = () => {
                       <div className="flex items-center justify-between">
                         <CardTitle className="text-base">Question {qIndex + 1}</CardTitle>
                         {questions.length > 1 && (
-                          <Button 
-                            variant="ghost" 
+                          <Button
+                            variant="ghost"
                             size="sm"
                             onClick={() => removeQuestion(q.id)}
                           >
@@ -442,8 +493,30 @@ const CreateTest = () => {
                     </CardHeader>
                     <CardContent className="space-y-4">
                       <div className="space-y-2">
+                        <Label>Question Type</Label>
+                        <RadioGroup
+                          className="flex gap-4"
+                          value={q.type || 'mcq'}
+                          onValueChange={(val: 'mcq' | 'coding') => {
+                            const newQuestions = [...questions];
+                            newQuestions[qIndex].type = val;
+                            setQuestions(newQuestions);
+                          }}
+                        >
+                          <div className="flex items-center space-x-2">
+                            <RadioGroupItem value="mcq" id={`q${q.id}-mcq`} />
+                            <Label htmlFor={`q${q.id}-mcq`}>Multiple Choice</Label>
+                          </div>
+                          <div className="flex items-center space-x-2">
+                            <RadioGroupItem value="coding" id={`q${q.id}-coding`} />
+                            <Label htmlFor={`q${q.id}-coding`}>Coding Problem</Label>
+                          </div>
+                        </RadioGroup>
+                      </div>
+
+                      <div className="space-y-2">
                         <Label>Question Text</Label>
-                        <Textarea 
+                        <Textarea
                           placeholder="Enter your question"
                           value={q.question}
                           onChange={(e) => {
@@ -454,33 +527,110 @@ const CreateTest = () => {
                         />
                       </div>
 
-                      <div className="space-y-3">
-                        <Label>Options (Select correct answer)</Label>
-                        <RadioGroup 
-                          value={q.correctAnswer.toString()}
-                          onValueChange={(value) => {
-                            const newQuestions = [...questions];
-                            newQuestions[qIndex].correctAnswer = parseInt(value);
-                            setQuestions(newQuestions);
-                          }}
-                        >
-                          {q.options.map((option, optIndex) => (
-                            <div key={optIndex} className="flex items-center gap-3">
-                              <RadioGroupItem value={optIndex.toString()} id={`q${q.id}-opt${optIndex}`} />
-                              <Input 
-                                placeholder={`Option ${optIndex + 1}`}
-                                value={option}
-                                onChange={(e) => {
-                                  const newQuestions = [...questions];
-                                  newQuestions[qIndex].options[optIndex] = e.target.value;
-                                  setQuestions(newQuestions);
-                                }}
-                                className="flex-1"
-                              />
-                            </div>
-                          ))}
-                        </RadioGroup>
-                      </div>
+                      {q.type === 'coding' ? (
+                        <div className="space-y-4 border rounded-md p-4 bg-muted/20">
+                          <div className="space-y-2">
+                            <Label>Starter Code (Optional)</Label>
+                            <Textarea
+                              className="font-mono text-sm"
+                              rows={4}
+                              placeholder="def solution(args):&#10;    pass"
+                              value={q.codingStarterCode || ''}
+                              onChange={(e) => {
+                                const newQuestions = [...questions];
+                                newQuestions[qIndex].codingStarterCode = e.target.value;
+                                setQuestions(newQuestions);
+                              }}
+                            />
+                          </div>
+
+                          <div className="space-y-3">
+                            <Label>Test Cases</Label>
+                            {(q.codingTestCases || []).map((testCase, tIdx) => (
+                              <div key={tIdx} className="grid grid-cols-2 gap-2 items-start">
+                                <Textarea
+                                  placeholder="Input (e.g. '1 5')"
+                                  rows={2}
+                                  value={testCase.input}
+                                  onChange={(e) => {
+                                    const newQuestions = [...questions];
+                                    if (!newQuestions[qIndex].codingTestCases) newQuestions[qIndex].codingTestCases = [];
+                                    newQuestions[qIndex].codingTestCases![tIdx].input = e.target.value;
+                                    setQuestions(newQuestions);
+                                  }}
+                                />
+                                <div className="flex gap-2">
+                                  <Textarea
+                                    placeholder="Expected Output"
+                                    rows={2}
+                                    value={testCase.output}
+                                    onChange={(e) => {
+                                      const newQuestions = [...questions];
+                                      if (!newQuestions[qIndex].codingTestCases) newQuestions[qIndex].codingTestCases = [];
+                                      newQuestions[qIndex].codingTestCases![tIdx].output = e.target.value;
+                                      setQuestions(newQuestions);
+                                    }}
+                                  />
+                                  <Button
+                                    variant="ghost"
+                                    size="icon"
+                                    className="mt-1"
+                                    onClick={() => {
+                                      const newQuestions = [...questions];
+                                      if (newQuestions[qIndex].codingTestCases && newQuestions[qIndex].codingTestCases!.length > 1) {
+                                        newQuestions[qIndex].codingTestCases = newQuestions[qIndex].codingTestCases!.filter((_, i) => i !== tIdx);
+                                        setQuestions(newQuestions);
+                                      }
+                                    }}
+                                  >
+                                    <Trash className="h-3 w-3" />
+                                  </Button>
+                                </div>
+                              </div>
+                            ))}
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => {
+                                const newQuestions = [...questions];
+                                if (!newQuestions[qIndex].codingTestCases) newQuestions[qIndex].codingTestCases = [];
+                                newQuestions[qIndex].codingTestCases!.push({ input: '', output: '' });
+                                setQuestions(newQuestions);
+                              }}
+                            >
+                              + Add Test Case
+                            </Button>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="space-y-3">
+                          <Label>Options (Select correct answer)</Label>
+                          <RadioGroup
+                            value={q.correctAnswer.toString()}
+                            onValueChange={(value) => {
+                              const newQuestions = [...questions];
+                              newQuestions[qIndex].correctAnswer = parseInt(value);
+                              setQuestions(newQuestions);
+                            }}
+                          >
+                            {q.options.map((option, optIndex) => (
+                              <div key={optIndex} className="flex items-center gap-3">
+                                <RadioGroupItem value={optIndex.toString()} id={`q${q.id}-opt${optIndex}`} />
+                                <Input
+                                  placeholder={`Option ${optIndex + 1}`}
+                                  value={option}
+                                  onChange={(e) => {
+                                    const newQuestions = [...questions];
+                                    newQuestions[qIndex].options[optIndex] = e.target.value;
+                                    setQuestions(newQuestions);
+                                  }}
+                                  className="flex-1"
+                                />
+                              </div>
+                            ))}
+                          </RadioGroup>
+                        </div>
+                      )}
                     </CardContent>
                   </Card>
                 ))}

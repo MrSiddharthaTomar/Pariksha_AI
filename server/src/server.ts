@@ -1737,6 +1737,179 @@ app.post('/api/student/start-attempt', async (req: Request, res: Response) => {
   }
 });
 
+// Submit a test attempt
+app.post('/api/student/submit-test', async (req: Request, res: Response) => {
+  try {
+    if (mongoose.connection.readyState !== 1) {
+      return res.status(503).json({ message: 'Database connection not available', error: 'DATABASE_UNAVAILABLE' });
+    }
+
+    const { studentId, testId, answers, startTime, endTime, violations } = req.body;
+
+    if (!studentId || !testId || !answers) {
+      return res.status(400).json({ message: 'Missing required submission fields', error: 'MISSING_FIELDS' });
+    }
+
+    // Try to find existing attempt first to avoid duplicates if possible, though schema handles unique
+    let attempt = await ExamAttempt.findOne({ studentId, testId });
+    if (!attempt) {
+      // Should ideally exist if 'start-test' was called, but if not create one
+      attempt = new ExamAttempt({
+        studentId,
+        testId,
+        startedAt: startTime ? new Date(startTime) : new Date(),
+        status: 'in-progress'
+      });
+    }
+
+    // Process answers - calculate score for MCQs
+    // We need to fetch the test questions to grade
+    const test = await Test.findById(testId).populate('questionIds');
+    if (!test) return res.status(404).json({ message: 'Test not found' });
+
+    const questionsMap: Record<string, any> = {};
+    (test.questionIds as any[]).forEach((q: any) => {
+      questionsMap[(q._id as any).toString()] = q;
+    });
+
+    let totalScore = 0;
+    const processedAnswers = Object.keys(answers).map((qId: string) => {
+      const question = questionsMap[qId];
+      if (!question) return null; // Should not happen
+
+      const submittedAns = answers[qId];
+
+      // Auto-grade MCQ
+      let isCorrect = false;
+      let marksObtained = 0;
+
+      if (question.type === 'mcq') {
+        // Compare with correct answer (index)
+        // Assuming question.correctAnswer is the index number
+        if (Number(submittedAns) === Number(question.correctAnswer)) {
+          isCorrect = true;
+          marksObtained = question.marks || 1;
+        }
+      } else if (question.type === 'coding') {
+        // Coding questions are not auto-graded here (future improvement: run test cases server side)
+        // For now, mark as needs grading or null
+        isCorrect = false;
+        marksObtained = 0; // Or partial
+      }
+
+      totalScore += marksObtained;
+
+      return {
+        questionId: question._id,
+        answer: submittedAns,
+        isCorrect,
+        marksObtained
+      };
+    }).filter(Boolean);
+
+    // Save final attempt
+    attempt.status = 'submitted';
+    attempt.endedAt = endTime ? new Date(endTime) : new Date();
+    attempt.answers = processedAnswers as any;
+    attempt.totalScore = totalScore;
+    attempt.questionsAttempted = processedAnswers.length;
+
+    // Process violations if any sent from client (though usually they are streamed)
+    if (Array.isArray(violations)) {
+      // We might want to save these to ProctoringLog if not already done
+      // For now, just count them towards trust score decrement
+      const violationCount = violations.length;
+      attempt.totalViolations = (attempt.totalViolations || 0) + violationCount;
+      attempt.trustScore = Math.max(0, (attempt.trustScore || 100) - (violationCount * 5));
+    }
+
+    await attempt.save();
+
+    res.status(200).json({ message: 'Test submitted successfully', score: totalScore });
+
+  } catch (error: any) {
+    console.error('Submit test error:', error);
+    res.status(500).json({ message: 'Failed to submit test', error: error?.message });
+  }
+});
+
+// Run Code Endpoint (using Piston API)
+app.post('/api/student/run-code', async (req: Request, res: Response) => {
+  const { language, code, stdin, mode, testCases } = req.body;
+
+  if (!language || !code) {
+    return res.status(400).json({ message: 'Language and code are required.' });
+  }
+
+  // Piston supported languages mapping
+  // We can add more mappings here if needed (e.g., 'c++' -> 'cpp')
+  const pistionLanguage = language === 'c++' ? 'cpp' : language;
+
+  const executePiston = async (input: string) => {
+    const pistonPayload = {
+      language: pistionLanguage,
+      version: '*',
+      files: [{ content: code }],
+      stdin: input || '',
+    };
+
+    const response = await fetch('https://emkc.org/api/v2/piston/execute', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(pistonPayload),
+    });
+
+    if (!response.ok) throw new Error(`Piston API Error: ${response.statusText}`);
+    return await response.json();
+  };
+
+  try {
+    if (mode === 'batch' && Array.isArray(testCases)) {
+      // Run against all test cases in parallel
+      const results = await Promise.all(testCases.map(async (testCase: any, index: number) => {
+        try {
+          const data = await executePiston(testCase.input);
+          const output = data.run ? data.run.output.trim() : ''; // Trim for comparison
+          const expected = (testCase.output || '').trim();
+
+          return {
+            id: index,
+            input: testCase.input,
+            expectedOutput: expected,
+            actualOutput: output,
+            passed: output === expected,
+            error: data.run && data.run.code !== 0 ? data.run.output : null
+          };
+        } catch (err: any) {
+          return {
+            id: index,
+            input: testCase.input,
+            expectedOutput: testCase.output,
+            actualOutput: '',
+            passed: false,
+            error: err.message
+          };
+        }
+      }));
+
+      const passedCount = results.filter(r => r.passed).length;
+      res.json({ mode: 'batch', results, passedCount, total: results.length });
+
+    } else {
+      // Default / Custom Input Mode (Single Run)
+      const data = await executePiston(stdin);
+      res.json({
+        mode: 'custom',
+        run: data.run
+      });
+    }
+
+  } catch (error: any) {
+    console.error('Code execution error:', error);
+    res.status(500).json({ message: 'Failed to execute code.', error: error.message });
+  }
+});
+
 // Endpoint to record multiple-monitor detection and block the attempt when necessary
 app.post('/api/student/multi-monitor-detected', async (req: Request, res: Response) => {
   try {

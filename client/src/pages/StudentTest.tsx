@@ -8,6 +8,11 @@ import { Badge } from "@/components/ui/badge";
 import { useNavigate } from "react-router-dom";
 import { useToast } from "@/hooks/use-toast";
 import { getApiUrl, authFetch } from "@/lib/api-config";
+import CodeEditor from "@/components/CodeEditor";
+import { Play, Loader2, CheckCircle, XCircle, Terminal, ListChecks } from "lucide-react";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { ScrollArea } from "@/components/ui/scroll-area";
 
 // Helper function to convert blob to base64
 const blobToBase64 = (blob: Blob): Promise<string> => {
@@ -68,8 +73,11 @@ const detectMultipleDisplays = async (): Promise<'multiple' | 'single' | 'unsupp
 
 interface TestQuestion {
   id: number;
+  type?: 'mcq' | 'coding';
   question: string;
   options: string[];
+  codingStarterCode?: string;
+  codingTestCases?: { input: string; output: string }[];
 }
 
 interface StudentTestData {
@@ -84,13 +92,22 @@ const StudentTest = () => {
   const { toast } = useToast();
   const [timeLeft, setTimeLeft] = useState(0);
   const [currentQuestion, setCurrentQuestion] = useState(0);
-  const [answers, setAnswers] = useState<Record<number, number>>({});
+  const [answers, setAnswers] = useState<Record<number, number | string>>({});
   const [isRecording, setIsRecording] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isRunningCode, setIsRunningCode] = useState(false);
+
+  // Coding state
+  const [selectedLanguage, setSelectedLanguage] = useState<string>('python');
+  const [customInput, setCustomInput] = useState<string>('');
+  const [activeTab, setActiveTab] = useState<string>('testcases');
+  const [batchResults, setBatchResults] = useState<{ passedCount: number, total: number, results: any[] } | null>(null);
+  const [customOutput, setCustomOutput] = useState<{ output: string, error?: string } | null>(null);
+
   const [showLiveFeed, setShowLiveFeed] = useState(true);
   const [test, setTest] = useState<StudentTestData | null>(null);
   const [isLoadingTest, setIsLoadingTest] = useState(true);
-  
+
   // Refs for recording
   const liveFeedRef = useRef<HTMLVideoElement>(null);
   const videoRecorderRef = useRef<MediaRecorder | null>(null);
@@ -102,7 +119,7 @@ const StudentTest = () => {
   const displayCheckIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const [blockedByMultiDisplay, setBlockedByMultiDisplay] = useState(false);
   const [multiDisplayMessage, setMultiDisplayMessage] = useState<string | null>(null);
-  
+
   const questions = test?.questions || [];
 
   // Fetch test data
@@ -139,7 +156,12 @@ const StudentTest = () => {
           id: data.id,
           name: data.name,
           duration: data.duration,
-          questions: data.questions || [],
+          questions: (data.questions || []).map((q: any) => ({
+            ...q,
+            type: q.type || 'mcq', // Ensure type fallback
+            codingStarterCode: q.codingStarterCode,
+            codingTestCases: q.codingTestCases
+          })),
         });
         setTimeLeft((data.duration || 60) * 60);
         setCurrentQuestion(0);
@@ -164,15 +186,15 @@ const StudentTest = () => {
           setIsLoadingTest(false);
           return;
         } else if (detectResult === 'permission_denied') {
-           setBlockedByMultiDisplay(true);
-           setMultiDisplayMessage('Permission Denied: To ensure a secure exam environment, you must allow "Window Management" or "screen details" permission. Please enable this permission in your browser settings (look for a lock/icon in the address bar) and refresh the page.');
-           setIsLoadingTest(false);
-           return;
+          setBlockedByMultiDisplay(true);
+          setMultiDisplayMessage('Permission Denied: To ensure a secure exam environment, you must allow "Window Management" or "screen details" permission. Please enable this permission in your browser settings (look for a lock/icon in the address bar) and refresh the page.');
+          setIsLoadingTest(false);
+          return;
         } else if (detectResult === 'unsupported') {
           toast({
             title: 'Display Detection Unavailable',
             description: 'Your browser does not support automatic multiple-display detection. Please ensure you are using a single display during the exam.',
-            variant: 'warning',
+            variant: 'default',
           });
         }
 
@@ -212,7 +234,7 @@ const StudentTest = () => {
       try {
         // Request camera and microphone access together
         const combinedStream = await navigator.mediaDevices.getUserMedia({
-          video: { 
+          video: {
             width: { ideal: 1280 },
             height: { ideal: 720 },
             facingMode: 'user'
@@ -273,10 +295,10 @@ const StudentTest = () => {
           try {
             // Combine chunks into a single blob
             const chunkBlob = new Blob(tempVideoChunks, { type: 'video/webm' });
-            
+
             // Convert to base64
             const chunkBase64 = await blobToBase64(chunkBlob);
-            
+
             // Get student ID and test ID
             const studentId = localStorage.getItem('studentId') || 'unknown';
             const testId = localStorage.getItem('testId') || 'unknown';
@@ -316,7 +338,7 @@ const StudentTest = () => {
         // Start both recorders with 10-second timeslice
         videoRecorder.start(1000); // Collect data every second
         audioRecorder.start(1000);
-        
+
         videoRecorderRef.current = videoRecorder;
         audioRecorderRef.current = audioRecorder;
 
@@ -337,7 +359,7 @@ const StudentTest = () => {
             { type: "Unauthorized device detected", severity: 'medium' as const },
             { type: "Audio detected", severity: 'low' as const },
           ];
-          
+
           if (Math.random() > 0.85) {
             const event = events[Math.floor(Math.random() * events.length)];
             violationsRef.current.push({
@@ -356,15 +378,15 @@ const StudentTest = () => {
               // Inform server and block locally
               const studentId = localStorage.getItem('studentId');
               const testId = localStorage.getItem('testId') || (test?.id);
-              
+
               const isPermissionError = result === 'permission_denied';
-              
+
               try {
                 // We only log to server if it's a confirmed multiple display detection, 
                 // or optionally we could log permission denial too. For now let's reuse api but maybe with different flag?
                 // The API call below is generic 'multi-monitor-detected', we might want to distinguish later but for now this is fine or we skip logging denied permission to avoid noise if user just misclicked.
                 // Let's Log it anyway so proctor knows why they got blocked.
-                 await authFetch(getApiUrl('/api/student/multi-monitor-detected'), {
+                await authFetch(getApiUrl('/api/student/multi-monitor-detected'), {
                   method: 'POST',
                   headers: { 'Content-Type': 'application/json' },
                   body: JSON.stringify({ studentId: studentId || undefined, testId, reason: result }),
@@ -374,8 +396,8 @@ const StudentTest = () => {
               }
 
               setBlockedByMultiDisplay(true);
-              setMultiDisplayMessage(isPermissionError 
-                ? 'Permission Revoked: You must allow "Window Management" permission to continue. Please check your browser settings.' 
+              setMultiDisplayMessage(isPermissionError
+                ? 'Permission Revoked: You must allow "Window Management" permission to continue. Please check your browser settings.'
                 : 'Multiple displays detected during the exam. Your attempt has been blocked.');
 
               // Stop recording and timers
@@ -468,7 +490,7 @@ const StudentTest = () => {
 
   const handleSubmitTest = async () => {
     if (isSubmitting || !test) return;
-    
+
     setIsSubmitting(true);
 
     try {
@@ -603,6 +625,77 @@ const StudentTest = () => {
 
   const currentQuestionData = questions[currentQuestion];
 
+  const handleRunBatch = async () => {
+    const code = answers[currentQuestionData.id] || currentQuestionData.codingStarterCode || '';
+    if (!code) return;
+
+    setIsRunningCode(true);
+    setBatchResults(null);
+    setActiveTab('testcases');
+
+    try {
+      const response = await authFetch(getApiUrl('/api/student/run-code'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          language: selectedLanguage,
+          code: code,
+          mode: 'batch',
+          testCases: currentQuestionData.codingTestCases || []
+        })
+      });
+
+      const data = await response.json();
+      setBatchResults(data);
+
+    } catch (err: any) {
+      toast({
+        title: "Execution Error",
+        description: err.message || "Failed to run test cases",
+        variant: "destructive"
+      });
+    } finally {
+      setIsRunningCode(false);
+    }
+  };
+
+  const handleRunCustom = async () => {
+    const code = answers[currentQuestionData.id] || currentQuestionData.codingStarterCode || '';
+    if (!code) return;
+
+    setIsRunningCode(true);
+    setCustomOutput(null);
+
+    try {
+      const response = await authFetch(getApiUrl('/api/student/run-code'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          language: selectedLanguage,
+          code: code,
+          mode: 'custom',
+          stdin: customInput
+        })
+      });
+
+      const data = await response.json();
+      if (data.run) {
+        setCustomOutput({
+          output: data.run.output,
+          error: data.run.code !== 0 ? 'Runtime Error' : undefined
+        });
+      }
+
+    } catch (err: any) {
+      setCustomOutput({
+        output: err.message || 'Failed to execute code',
+        error: 'System Error'
+      });
+    } finally {
+      setIsRunningCode(false);
+    }
+  };
+
   return (
     <div className="min-h-screen bg-gradient-hero p-4 relative">
       {/* Live Camera Feed - Top Right Corner (Toggleable) */}
@@ -640,7 +733,7 @@ const StudentTest = () => {
                 Proctoring Active
               </Badge>
             </div>
-            
+
             {/* Right side: Timer and Proctoring Logo */}
             <div className="flex items-center gap-4">
               <div className="flex items-center gap-2 text-destructive font-semibold">
@@ -680,38 +773,161 @@ const StudentTest = () => {
                   {currentQuestionData.question}
                 </div>
 
-                <RadioGroup 
-                  value={answers[currentQuestionData.id]?.toString() ?? ''} 
-                  onValueChange={(value) => {
-                    const selectedIndex = parseInt(value, 10);
-                    setAnswers(prev => ({
-                      ...prev,
-                      [currentQuestionData.id]: selectedIndex,
-                    }));
-                  }}
-                >
-                  {currentQuestionData.options.map((option, index) => (
-                    <div 
-                      key={index} 
-                      className="flex items-center space-x-3 p-4 rounded-lg border hover:bg-muted/50 cursor-pointer transition-colors"
-                      onClick={() => {
+                {currentQuestionData.type === 'coding' ? (
+                  <div className="space-y-4">
+                    <div className="flex justify-between items-center bg-muted/30 p-2 rounded">
+                      <div className="flex items-center gap-2">
+                        <Select value={selectedLanguage} onValueChange={setSelectedLanguage}>
+                          <SelectTrigger className="w-[140px] h-8 text-xs">
+                            <SelectValue placeholder="Language" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="python">Python 3</SelectItem>
+                            <SelectItem value="javascript">JavaScript</SelectItem>
+                            <SelectItem value="java">Java</SelectItem>
+                            <SelectItem value="cpp">C++</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <div className="flex gap-2">
+                        <Button size="sm" variant="secondary" onClick={handleRunCustom} disabled={isRunningCode}>
+                          {isRunningCode ? <Loader2 className="w-3 h-3 animate-spin mr-1" /> : <Terminal className="w-3 h-3 mr-1" />}
+                          Run Custom
+                        </Button>
+                        <Button size="sm" onClick={handleRunBatch} disabled={isRunningCode}>
+                          {isRunningCode ? <Loader2 className="w-4 h-4 animate-spin mr-1" /> : <Play className="w-4 h-4 mr-1 fill-current" />}
+                          Run All Tests
+                        </Button>
+                      </div>
+                    </div>
+
+                    <CodeEditor
+                      language={selectedLanguage}
+                      value={(answers[currentQuestionData.id] as string) || currentQuestionData.codingStarterCode || ''}
+                      onChange={(val) => {
                         setAnswers(prev => ({
                           ...prev,
-                          [currentQuestionData.id]: index,
+                          [currentQuestionData.id]: val || ''
                         }));
                       }}
-                    >
-                      <RadioGroupItem value={index.toString()} id={`q${currentQuestionData.id}-${index}`} />
-                      <Label htmlFor={`q${currentQuestionData.id}-${index}`} className="flex-1 cursor-pointer">
-                        {option}
-                      </Label>
-                    </div>
-                  ))}
-                </RadioGroup>
+                    />
+
+                    <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full border rounded-md">
+                      <TabsList className="w-full justify-start rounded-b-none border-b bg-muted/20 p-0 h-10">
+                        <TabsTrigger value="testcases" className="data-[state=active]:bg-background rounded-none h-full border-b-2 border-transparent data-[state=active]:border-primary px-4">
+                          <ListChecks className="w-3 h-3 mr-2" />
+                          Test Cases
+                        </TabsTrigger>
+                        <TabsTrigger value="custom" className="data-[state=active]:bg-background rounded-none h-full border-b-2 border-transparent data-[state=active]:border-primary px-4">
+                          <Terminal className="w-3 h-3 mr-2" />
+                          Custom Input
+                        </TabsTrigger>
+                      </TabsList>
+
+                      <TabsContent value="testcases" className="p-4 m-0">
+                        {/* Summary Header */}
+                        {batchResults && (
+                          <div className="mb-4 flex items-center gap-2 text-sm font-medium">
+                            <span className={batchResults.passedCount === batchResults.total ? "text-green-600" : "text-amber-600"}>
+                              Passed {batchResults.passedCount}/{batchResults.total} Test Cases
+                            </span>
+                          </div>
+                        )}
+
+                        <ScrollArea className="h-[200px] pr-4">
+                          <div className="space-y-3">
+                            {(currentQuestionData.codingTestCases || []).map((tc, idx) => {
+                              const result = batchResults?.results?.find((r: any) => r.id === idx);
+                              const status = result ? (result.passed ? 'success' : 'error') : 'pending';
+
+                              return (
+                                <div key={idx} className="border rounded-md p-3 text-sm">
+                                  <div className="flex items-center justify-between mb-2">
+                                    <span className="font-semibold text-muted-foreground">Test Case #{idx + 1}</span>
+                                    {status === 'success' && <div className="flex items-center text-green-600 text-xs font-bold"><CheckCircle className="w-3 h-3 mr-1" /> Passed</div>}
+                                    {status === 'error' && <div className="flex items-center text-red-600 text-xs font-bold"><XCircle className="w-3 h-3 mr-1" /> Failed</div>}
+                                  </div>
+                                  <div className="grid grid-cols-2 gap-4 text-xs font-mono">
+                                    <div>
+                                      <div className="text-muted-foreground mb-1">Input:</div>
+                                      <div className="bg-muted p-2 rounded">{tc.input}</div>
+                                    </div>
+                                    <div>
+                                      <div className="text-muted-foreground mb-1">Expected Output:</div>
+                                      <div className="bg-muted p-2 rounded">{tc.output}</div>
+                                    </div>
+                                  </div>
+                                  {status === 'error' && (
+                                    <div className="mt-2 text-xs font-mono bg-red-50 p-2 rounded border border-red-100 text-red-800">
+                                      <div className="font-semibold mb-1">Your Output:</div>
+                                      <div className="whitespace-pre-wrap">{result.actualOutput || (result.error ? `Error: ${result.error}` : '(No output)')}</div>
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            })}
+                            {(!currentQuestionData.codingTestCases || currentQuestionData.codingTestCases.length === 0) && (
+                              <div className="text-muted-foreground text-center py-4">No test cases available for this question.</div>
+                            )}
+                          </div>
+                        </ScrollArea>
+                      </TabsContent>
+
+                      <TabsContent value="custom" className="p-4 m-0 space-y-4">
+                        <div>
+                          <Label className="text-xs text-muted-foreground mb-1 block">Custom Input (Stdin)</Label>
+                          <textarea
+                            className="w-full min-h-[80px] p-3 rounded-md border text-sm font-mono bg-background resize-y"
+                            placeholder="Enter input here..."
+                            value={customInput}
+                            onChange={(e) => setCustomInput(e.target.value)}
+                          />
+                        </div>
+
+                        {customOutput && (
+                          <div className={`p-3 rounded-md text-sm font-mono whitespace-pre-wrap border ${customOutput.error ? 'bg-red-50 border-red-200 text-red-800' : 'bg-muted border-transparent'}`}>
+                            <div className="font-semibold text-xs mb-1 opacity-70">Output:</div>
+                            {customOutput.output}
+                          </div>
+                        )}
+                      </TabsContent>
+                    </Tabs>
+
+                  </div>
+                ) : (
+                  <RadioGroup
+                    value={answers[currentQuestionData.id]?.toString() ?? ''}
+                    onValueChange={(value) => {
+                      const selectedIndex = parseInt(value, 10);
+                      setAnswers(prev => ({
+                        ...prev,
+                        [currentQuestionData.id]: selectedIndex,
+                      }));
+                    }}
+                  >
+                    {currentQuestionData.options.map((option, index) => (
+                      <div
+                        key={index}
+                        className="flex items-center space-x-3 p-4 rounded-lg border hover:bg-muted/50 cursor-pointer transition-colors"
+                        onClick={() => {
+                          setAnswers(prev => ({
+                            ...prev,
+                            [currentQuestionData.id]: index,
+                          }));
+                        }}
+                      >
+                        <RadioGroupItem value={index.toString()} id={`q${currentQuestionData.id}-${index}`} />
+                        <Label htmlFor={`q${currentQuestionData.id}-${index}`} className="flex-1 cursor-pointer">
+                          {option}
+                        </Label>
+                      </div>
+                    ))}
+                  </RadioGroup>
+                )}
 
                 <div className="flex gap-3 pt-4">
-                  <Button 
-                    variant="outline" 
+                  <Button
+                    variant="outline"
                     onClick={() => setCurrentQuestion(Math.max(0, currentQuestion - 1))}
                     disabled={currentQuestion === 0 || isSubmitting}
                     size="lg"
@@ -720,7 +936,7 @@ const StudentTest = () => {
                     Previous
                   </Button>
                   {currentQuestion < questions.length - 1 ? (
-                    <Button 
+                    <Button
                       onClick={() => setCurrentQuestion(currentQuestion + 1)}
                       className="flex-1"
                       size="sm"
@@ -729,8 +945,8 @@ const StudentTest = () => {
                       Next Question
                     </Button>
                   ) : (
-                    <Button 
-                      onClick={handleSubmitTest} 
+                    <Button
+                      onClick={handleSubmitTest}
                       className="flex-1"
                       disabled={isSubmitting}
                     >
@@ -756,11 +972,10 @@ const StudentTest = () => {
                       variant={currentQuestion === index ? "default" : answers[questionItem.id] !== undefined ? "default" : "ghost"}
                       size="sm"
                       onClick={() => setCurrentQuestion(index)}
-                      className={`w-full border-2 aspect-square font-semibold transition-colors ${
-                        answers[questionItem.id] !== undefined && currentQuestion !== index 
-                          ? 'bg-green-500 hover:bg-green-600 text-white border-green-600' 
-                          : ''
-                      }`}
+                      className={`w-full border-2 aspect-square font-semibold transition-colors ${answers[questionItem.id] !== undefined && currentQuestion !== index
+                        ? 'bg-green-500 hover:bg-green-600 text-white border-green-600'
+                        : ''
+                        }`}
                       disabled={isSubmitting}
                     >
                       {index + 1}
