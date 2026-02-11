@@ -73,11 +73,12 @@ const detectMultipleDisplays = async (): Promise<'multiple' | 'single' | 'unsupp
 
 interface TestQuestion {
   id: number;
+  questionId?: string;
   type?: 'mcq' | 'coding';
   question: string;
   options: string[];
   codingStarterCode?: string;
-  codingTestCases?: { input: string; output: string }[];
+  codingTestCases?: { input: string; output: string; hidden?: boolean }[];
 }
 
 interface StudentTestData {
@@ -641,7 +642,8 @@ const StudentTest = () => {
           language: selectedLanguage,
           code: code,
           mode: 'batch',
-          testCases: currentQuestionData.codingTestCases || []
+          testCases: currentQuestionData.codingTestCases || [],
+          questionId: currentQuestionData.questionId
         })
       });
 
@@ -839,28 +841,37 @@ const StudentTest = () => {
                             {(currentQuestionData.codingTestCases || []).map((tc, idx) => {
                               const result = batchResults?.results?.find((r: any) => r.id === idx);
                               const status = result ? (result.passed ? 'success' : 'error') : 'pending';
+                              const isHidden = tc.hidden || (result && result.hidden);
 
                               return (
                                 <div key={idx} className="border rounded-md p-3 text-sm">
                                   <div className="flex items-center justify-between mb-2">
-                                    <span className="font-semibold text-muted-foreground">Test Case #{idx + 1}</span>
+                                    <span className="font-semibold text-muted-foreground">{isHidden ? `Test Case #${idx + 1} (Hidden)` : `Test Case #${idx + 1}`}</span>
                                     {status === 'success' && <div className="flex items-center text-green-600 text-xs font-bold"><CheckCircle className="w-3 h-3 mr-1" /> Passed</div>}
                                     {status === 'error' && <div className="flex items-center text-red-600 text-xs font-bold"><XCircle className="w-3 h-3 mr-1" /> Failed</div>}
                                   </div>
-                                  <div className="grid grid-cols-2 gap-4 text-xs font-mono">
-                                    <div>
-                                      <div className="text-muted-foreground mb-1">Input:</div>
-                                      <div className="bg-muted p-2 rounded">{tc.input}</div>
-                                    </div>
-                                    <div>
-                                      <div className="text-muted-foreground mb-1">Expected Output:</div>
-                                      <div className="bg-muted p-2 rounded">{tc.output}</div>
-                                    </div>
-                                  </div>
-                                  {status === 'error' && (
-                                    <div className="mt-2 text-xs font-mono bg-red-50 p-2 rounded border border-red-100 text-red-800">
-                                      <div className="font-semibold mb-1">Your Output:</div>
-                                      <div className="whitespace-pre-wrap">{result.actualOutput || (result.error ? `Error: ${result.error}` : '(No output)')}</div>
+                                  {!isHidden ? (
+                                    <>
+                                      <div className="grid grid-cols-2 gap-4 text-xs font-mono">
+                                        <div>
+                                          <div className="text-muted-foreground mb-1">Input:</div>
+                                          <div className="bg-muted p-2 rounded">{tc.input}</div>
+                                        </div>
+                                        <div>
+                                          <div className="text-muted-foreground mb-1">Expected Output:</div>
+                                          <div className="bg-muted p-2 rounded">{tc.output}</div>
+                                        </div>
+                                      </div>
+                                      {status === 'error' && (
+                                        <div className="mt-2 text-xs font-mono bg-red-50 p-2 rounded border border-red-100 text-red-800">
+                                          <div className="font-semibold mb-1">Your Output:</div>
+                                          <div className="whitespace-pre-wrap">{result.actualOutput || (result.error ? `Error: ${result.error}` : '(No output)')}</div>
+                                        </div>
+                                      )}
+                                    </>
+                                  ) : (
+                                    <div className="text-xs text-muted-foreground italic bg-muted/30 p-2 rounded">
+                                      Hidden test cases are used for evaluation only. Input and output details are hidden.
                                     </div>
                                   )}
                                 </div>

@@ -6,6 +6,7 @@ export interface ICodingTestCase {
   input: string;
   output: string;
   explanation?: string;
+  hidden?: boolean;
 }
 
 export interface IQuestion extends Document {
@@ -78,6 +79,7 @@ const QuestionSchema = new Schema<IQuestion>(
         input: { type: String, required: true },
         output: { type: String, required: true },
         explanation: { type: String },
+        hidden: { type: Boolean, default: false },
       },
     ],
     subjectiveRubric: {

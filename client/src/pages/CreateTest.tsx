@@ -15,6 +15,7 @@ import { getApiUrl, authFetch } from "@/lib/api-config";
 interface TestCase {
   input: string;
   output: string;
+  hidden?: boolean;
 }
 
 interface Question {
@@ -104,7 +105,7 @@ const CreateTest = () => {
             options: q.options || ['', '', '', ''],
             correctAnswer: typeof q.correctAnswer === 'number' ? q.correctAnswer : 0,
             codingStarterCode: q.codingStarterCode || '',
-            codingTestCases: q.codingTestCases || [{ input: '', output: '' }]
+            codingTestCases: (q.codingTestCases || [{ input: '', output: '', hidden: false }]).map((tc: any) => ({ ...tc, hidden: !!tc.hidden }))
           })));
         }
       } catch (err: any) {
@@ -586,6 +587,19 @@ const CreateTest = () => {
                                     <Trash className="h-3 w-3" />
                                   </Button>
                                 </div>
+                                <div className="flex items-center space-x-2 mt-2">
+                                  <Checkbox
+                                    id={`hidden-${q.id}-${tIdx}`}
+                                    checked={testCase.hidden || false}
+                                    onCheckedChange={(checked) => {
+                                      const newQuestions = [...questions];
+                                      if (!newQuestions[qIndex].codingTestCases) newQuestions[qIndex].codingTestCases = [];
+                                      newQuestions[qIndex].codingTestCases![tIdx].hidden = checked === true;
+                                      setQuestions(newQuestions);
+                                    }}
+                                  />
+                                  <Label htmlFor={`hidden-${q.id}-${tIdx}`} className="text-sm cursor-pointer">Hidden Test Case</Label>
+                                </div>
                               </div>
                             ))}
                             <Button
@@ -594,7 +608,7 @@ const CreateTest = () => {
                               onClick={() => {
                                 const newQuestions = [...questions];
                                 if (!newQuestions[qIndex].codingTestCases) newQuestions[qIndex].codingTestCases = [];
-                                newQuestions[qIndex].codingTestCases!.push({ input: '', output: '' });
+                                newQuestions[qIndex].codingTestCases!.push({ input: '', output: '', hidden: false });
                                 setQuestions(newQuestions);
                               }}
                             >
