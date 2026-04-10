@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
-import { AlertCircle, CheckCircle2, ShieldAlert } from "lucide-react";
+import { AlertCircle, CheckCircle2, ShieldAlert, LogOut } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 
 const StudentRules = () => {
@@ -105,6 +105,20 @@ const StudentRules = () => {
                 size="lg"
               >
                 Start Exam
+              </Button>
+              <Button
+                variant="outline"
+                className=" hover:bg-destructive hover:border-destructive"
+                onClick={() => {
+                  localStorage.removeItem('token');
+                  localStorage.removeItem('user');
+                  localStorage.removeItem('studentId');
+                  localStorage.removeItem('studentEmail');
+                  navigate('/');
+                }}
+              >
+                <LogOut className="mr-2 h-4 w-4" />
+                Logout
               </Button>
             </div>
           </CardContent>

@@ -2,7 +2,7 @@ import { useEffect, useState, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
-import { ArrowLeft, User, Mail, ShieldCheck, UserCheck, Camera, Loader2 } from "lucide-react";
+import { ArrowLeft, User, Mail, ShieldCheck, UserCheck, Camera, Loader2, LogOut } from "lucide-react";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { useToast } from "@/hooks/use-toast";
 import { getApiUrl, authFetch } from "@/lib/api-config";
@@ -91,14 +91,27 @@ const ExaminerProfile = () => {
     return (
         <div className="min-h-screen bg-gradient-hero p-4 lg:p-8 flex items-center justify-center overflow-hidden">
             <div className="w-full max-w-5xl">
-                <Button
-                    variant="ghost"
-                    onClick={() => navigate('/examiner/dashboard')}
-                    className="mb-6"
-                >
-                    <ArrowLeft className="mr-2 h-4 w-4" />
-                    Back to Dashboard
-                </Button>
+                <div className="flex items-center justify-between mb-6">
+                    <Button
+                        variant="ghost"
+                        onClick={() => navigate('/examiner/dashboard')}
+                    >
+                        <ArrowLeft className="mr-2 h-4 w-4" />
+                        Back to Dashboard
+                    </Button>
+                    <Button
+                        variant="outline"
+                        className=" hover:bg-destructive hover:border-destructive"
+                        onClick={() => {
+                            localStorage.removeItem('token');
+                            localStorage.removeItem('user');
+                            navigate('/');
+                        }}
+                    >
+                        <LogOut className="mr-2 h-4 w-4" />
+                        Logout
+                    </Button>
+                </div>
 
                 <div className="grid lg:grid-cols-3 gap-6 h-[80vh] lg:h-auto">
                     {/* Left Column - Avatar & Basic Info */}

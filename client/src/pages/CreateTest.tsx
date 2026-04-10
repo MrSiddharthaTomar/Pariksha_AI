@@ -707,7 +707,7 @@ const CreateTest = () => {
 
                   <div className="flex items-center gap-2">
                     <Button variant="outline" onClick={selectAll}>Select Visible</Button>
-                    <Button variant="ghost" onClick={clearSelection}>Clear</Button>
+                    <Button className="hover:bg-destructive" variant="outline" onClick={clearSelection}>Clear</Button>
                   </div>
 
                   <div className="max-h-64 overflow-auto border rounded p-2 space-y-2">
@@ -733,8 +733,8 @@ const CreateTest = () => {
 
                 <DialogFooter>
                   <div className="flex items-center gap-2">
-                    <Button variant="outline" onClick={() => setIsScheduleOpen(false)}>Cancel</Button>
-                    <Button variant="secondary" onClick={handleUseSelection}>Use Selection</Button>
+                    <Button className="hover:bg-destructive hover:text-white" variant="outline" onClick={() => navigate('/examiner/dashboard')}>Cancel</Button>
+                    <Button variant="default" onClick={handleUseSelection}>Use Selection</Button>
                   </div>
                 </DialogFooter>
               </DialogContent>

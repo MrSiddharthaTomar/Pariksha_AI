@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { ArrowLeft, Clock, FileText, Loader2, UserCircle } from "lucide-react";
+import { ArrowLeft, Clock, FileText, Loader2, UserCircle, LogOut } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { getApiUrl, authFetch } from "@/lib/api-config";
 
@@ -128,14 +128,29 @@ const StudentTestList = () => {
           <p className="text-muted-foreground">
             Select a test to begin. Make sure you're ready before starting.
           </p>
-          <Button
-            className="absolute top-6 right-0"
-            variant="outline"
-            onClick={() => navigate('/student/profile')}
-          >
-            <UserCircle className="mr-2 h-4 w-4" />
-            My Profile
-          </Button>
+          <div className="absolute top-6 right-0 flex items-center gap-2">
+            <Button
+              variant="outline"
+              onClick={() => navigate('/student/profile')}
+            >
+              <UserCircle className="mr-2 h-4 w-4" />
+              My Profile
+            </Button>
+            <Button
+              variant="outline"
+              className=" hover:bg-destructive hover:border-destructive"
+              onClick={() => {
+                localStorage.removeItem('token');
+                localStorage.removeItem('user');
+                localStorage.removeItem('studentId');
+                localStorage.removeItem('studentEmail');
+                navigate('/');
+              }}
+            >
+              <LogOut className="mr-2 h-4 w-4" />
+              Logout
+            </Button>
+          </div>
         </div>
 
         {isLoading ? (

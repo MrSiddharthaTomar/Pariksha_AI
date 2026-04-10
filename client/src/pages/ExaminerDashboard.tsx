@@ -134,7 +134,7 @@ const ExaminerDashboard = () => {
                 <UserCircle className="mr-2 h-4 w-4" />
                 Profile
               </Button>
-              <Button variant="outline" onClick={() => { localStorage.removeItem('token'); localStorage.removeItem('user'); navigate('/'); }}>
+              <Button variant="outline" className=" hover:bg-destructive hover:border-destructive" onClick={() => { localStorage.removeItem('token'); localStorage.removeItem('user'); navigate('/'); }}>
                 <LogOut className="mr-2 h-4 w-4" />
                 Logout
               </Button>
@@ -300,11 +300,11 @@ const ExaminerDashboard = () => {
                         )}
 
                         <Button variant="ghost" size="sm" onClick={(e) => { e.stopPropagation(); navigate(`/examiner/create-test/${test.id}`); }}>
-                          <Edit className="h-4 w-4" />
+                          <Edit className="h-4 w-4 " />
                         </Button>
 
-                        <Button variant="ghost" size="sm" onClick={(e) => { e.stopPropagation(); handleDeleteTest(test.id); }}>
-                          <Trash className="h-4 w-4 text-destructive" />
+                        <Button className=" hover:bg-destructive hover:text-white text-destructive" variant="ghost" size="sm" onClick={(e) => { e.stopPropagation(); handleDeleteTest(test.id); }}>
+                          <Trash className="h-4 w-4 " />
                         </Button>
                       </div>
                     </div>

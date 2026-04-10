@@ -4,7 +4,7 @@ import { Card, CardHeader, CardTitle, CardContent, CardDescription } from "@/com
 import { Button } from "@/components/ui/button";
 import { getApiUrl, authFetch, getImageUrl } from "@/lib/api-config";
 import { useToast } from "@/hooks/use-toast";
-import { Calendar, Users, Eye } from "lucide-react";
+import { Calendar, Users, Eye, Home } from "lucide-react";
 
 const ReviewViolations = () => {
   const [loading, setLoading] = useState(true);
@@ -47,8 +47,16 @@ const ReviewViolations = () => {
     <div className="min-h-screen bg-gradient-hero">
       <div className="bg-card border-b">
         <div className="container mx-auto px-4 py-4">
-          <div className="flex items-center justify-between">
-            <div>
+          <div className="flex items-start justify-between gap-4">
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={() => navigate('/examiner/dashboard')}
+              title="Back to Dashboard"
+            >
+              <Home className="h-5 w-5" />
+            </Button>
+            <div className="flex-1">
               <h1 className="text-2xl font-bold">Violation Review</h1>
               <p className="text-muted-foreground">Open tests to review detected violations and attempts</p>
             </div>
@@ -65,7 +73,7 @@ const ReviewViolations = () => {
         ) : error ? (
           <div className="p-4 text-destructive">{error}</div>
         ) : tests.length === 0 ? (
-          <div className="p-4 text-muted-foreground">There are no live tests right now.</div>
+          <div className="p-4 text-muted-foreground">No pending violations for review.</div>
         ) : (
           <div className="space-y-4">
             {tests.map((t) => (
