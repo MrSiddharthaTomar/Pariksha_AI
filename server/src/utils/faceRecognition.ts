@@ -1,6 +1,7 @@
 import * as faceapi from 'face-api.js';
 import { Canvas, Image, ImageData, loadImage } from 'canvas';
-import * as tf from '@tensorflow/tfjs-node';
+import * as tf from '@tensorflow/tfjs';
+import '@tensorflow/tfjs-backend-cpu';
 import path from 'path';
 import fs from 'fs';
 
@@ -43,6 +44,9 @@ export async function loadFaceModels(): Promise<void> {
   }
 
   try {
+    await tf.setBackend('cpu');
+    await tf.ready();
+
     // Log the path being used for debugging
     console.log('Looking for models at:', MODEL_PATH);
     console.log('Current working directory:', process.cwd());

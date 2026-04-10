@@ -70,6 +70,8 @@ cd ../client
 npm install
 ```
 
+> **Important:** The backend now uses the CPU-only TensorFlow JS backend for Windows, so it avoids native `@tensorflow/tfjs-node` compilation and does not require Visual Studio C++ build tools.
+
 ### 2. Prepare the Python virtual environment
 
 The ML proctoring model requires Python 3.10+ with specific packages. Choose one method:
