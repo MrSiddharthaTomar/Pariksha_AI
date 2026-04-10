@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -7,13 +7,24 @@ import { Label } from "@/components/ui/label";
 import { ArrowLeft, LogIn, Loader2 } from "lucide-react";
 import WebcamCapture from "@/components/WebcamCapture";
 import { useToast } from "@/hooks/use-toast";
-import { getApiUrl } from "@/lib/api-config";
-import { ensureSingleRole } from "@/lib/auth";
+import { getApiUrl, getToken } from "@/lib/api-config";
+import { ensureSingleRole, isTokenValid, getUserFromToken } from "@/lib/auth";
 
 const StudentLogin = () => {
   const navigate = useNavigate();
   const { toast } = useToast();
   const [isLoading, setIsLoading] = useState(false);
+
+  // Redirect if already logged in as student
+  useEffect(() => {
+    const token = getToken();
+    if (token && isTokenValid(token)) {
+      const user = getUserFromToken(token);
+      if (user && user.role === 'student') {
+        navigate('/student/tests', { replace: true });
+      }
+    }
+  }, [navigate]);
   const [formData, setFormData] = useState({
     email: '',
     password: '',

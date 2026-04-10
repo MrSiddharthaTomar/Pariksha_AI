@@ -11,6 +11,7 @@ interface WebcamCaptureProps {
 
 const WebcamCapture = ({ onCapture, capturedImage, disabled = false }: WebcamCaptureProps) => {
   const videoRef = useRef<HTMLVideoElement>(null);
+  const isMountedRef = useRef(true);
   const [isStreaming, setIsStreaming] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const { toast } = useToast();
@@ -26,6 +27,12 @@ const WebcamCapture = ({ onCapture, capturedImage, disabled = false }: WebcamCap
         } 
       });
       
+      // Check if component is still mounted before proceeding
+      if (!isMountedRef.current) {
+        stream.getTracks().forEach(track => track.stop());
+        return;
+      }
+      
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
         setIsStreaming(true);
@@ -39,35 +46,41 @@ const WebcamCapture = ({ onCapture, capturedImage, disabled = false }: WebcamCap
         // If video element not ready, stop the stream
         stream.getTracks().forEach(track => track.stop());
         setIsLoading(false);
+        // Only show toast if component is still mounted
+        if (isMountedRef.current) {
+          toast({
+            title: "Camera Error",
+            description: "Video element not ready. Please refresh the page.",
+            variant: "destructive",
+          });
+        }
+      }
+    } catch (error) {
+      // Only update state if component is still mounted
+      if (isMountedRef.current) {
+        setIsLoading(false);
+        setIsStreaming(false);
+        console.error('Camera error:', error);
         toast({
           title: "Camera Error",
-          description: "Video element not ready. Please refresh the page.",
+          description: "Unable to access camera. Please check permissions.",
           variant: "destructive",
         });
       }
-    } catch (error) {
-      setIsLoading(false);
-      setIsStreaming(false);
-      console.error('Camera error:', error);
-      toast({
-        title: "Camera Error",
-        description: "Unable to access camera. Please check permissions.",
-        variant: "destructive",
-      });
     }
   }, [toast]);
 
   // Auto-start camera when component mounts or when captured image is cleared
   useEffect(() => {
-    let isMounted = true;
+    isMountedRef.current = true;
     
-    if (!capturedImage && isMounted) {
+    if (!capturedImage) {
       startCamera();
     }
 
     // Cleanup: stop camera when component unmounts
     return () => {
-      isMounted = false;
+      isMountedRef.current = false;
       if (videoRef.current && videoRef.current.srcObject) {
         const stream = videoRef.current.srcObject as MediaStream;
         stream.getTracks().forEach(track => track.stop());
@@ -82,12 +95,14 @@ const WebcamCapture = ({ onCapture, capturedImage, disabled = false }: WebcamCap
       const stream = videoRef.current.srcObject as MediaStream;
       stream.getTracks().forEach(track => track.stop());
       videoRef.current.srcObject = null;
-      setIsStreaming(false);
+      if (isMountedRef.current) {
+        setIsStreaming(false);
+      }
     }
   }, []);
 
   const capturePhoto = useCallback(() => {
-    if (videoRef.current && videoRef.current.videoWidth > 0) {
+    if (videoRef.current && videoRef.current.videoWidth > 0 && isMountedRef.current) {
       const canvas = document.createElement('canvas');
       const width = videoRef.current.videoWidth;
       const height = videoRef.current.videoHeight;
@@ -111,7 +126,7 @@ const WebcamCapture = ({ onCapture, capturedImage, disabled = false }: WebcamCap
     onCapture('');
     // Camera should already be streaming if we just captured
     // If not, restart it
-    if (!isStreaming) {
+    if (!isStreaming && isMountedRef.current) {
       startCamera();
     }
   }, [onCapture, isStreaming, startCamera]);
