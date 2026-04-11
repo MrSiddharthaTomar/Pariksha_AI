@@ -3,7 +3,7 @@ import express, { Request, Response } from 'express';
 import bodyParser from 'body-parser';
 import cors from 'cors';
 import dotenv from 'dotenv';
-
+import router from './routes/routes';
 // Load environment variables from .env file FIRST, before importing other modules
 dotenv.config();
 
@@ -18,6 +18,7 @@ import ProctoringLog from './models/ProctoringLog';
 import { loadFaceModels, validateFace, compareFaces } from './utils/faceRecognition';
 import { processVideoChunkWithML, extractFrameFromVideo } from './utils/mlProctoring';
 import { getCheatingImagesBucket } from './utils/gridfs';
+import { authenticateJWT } from './utils/jwt';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -108,21 +109,7 @@ const generateJwtForUser = (user: any) => {
   return (jwt as any).sign(payload, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
 };
 
-const authenticateJWT = (req: Request, res: Response, next: Function) => {
-  const authHeader = (req.headers['authorization'] || '') as string;
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    return res.status(401).json({ message: 'Missing or invalid Authorization header' });
-  }
-  const token = authHeader.split(' ')[1];
-  try {
-    const decoded = jwt.verify(token, JWT_SECRET) as any;
-    // attach to request
-    (req as any).user = decoded;
-    next();
-  } catch (err: any) {
-    return res.status(401).json({ message: 'Invalid or expired token' });
-  }
-};
+
 
 const requireRole = (role: string) => (req: Request, res: Response, next: Function) => {
   const user = (req as any).user;
@@ -147,242 +134,10 @@ app.get('/api/load-models', async (req: Request, res: Response) => {
 // ===============================
 //         AUTH ROUTES
 // ===============================
+app.use("/api/", router);
 
+// REMOVE FROM HERE PLEASE (USE ROUTES OR SOMETHING FOR THIS STUFF)
 // Handles registration from StudentRegister.tsx and ExaminerRegister.tsx
-app.post('/api/auth/:role/register', async (req: Request, res: Response) => {
-  try {
-    // Check MongoDB connection
-    if (mongoose.connection.readyState !== 1) {
-      return res.status(503).json({
-        message: 'Database connection not available. Please try again later.',
-        error: 'DATABASE_UNAVAILABLE'
-      });
-    }
-
-    const { role } = req.params;
-    const { fullName, email, password, photo } = req.body;
-
-    // Validate input
-    if (!fullName || !email || !password || !photo) {
-      return res.status(400).json({
-        message: 'All fields are required.',
-        error: 'MISSING_FIELDS'
-      });
-    }
-
-    // Validate role
-    if (role !== 'student' && role !== 'examiner') {
-      return res.status(400).json({
-        message: 'Invalid role. Must be "student" or "examiner".',
-        error: 'INVALID_ROLE'
-      });
-    }
-
-    // Validate email format
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    if (!emailRegex.test(email)) {
-      return res.status(400).json({
-        message: 'Please provide a valid email address.',
-        error: 'INVALID_EMAIL'
-      });
-    }
-
-    // Validate password length
-    if (password.length < 6) {
-      return res.status(400).json({
-        message: 'Password must be at least 6 characters long.',
-        error: 'INVALID_PASSWORD'
-      });
-    }
-
-    // Check if user already exists in MongoDB (email must be unique globally)
-    const existingUser = await User.findOne({ email: email.toLowerCase() });
-    if (existingUser) {
-      return res.status(409).json({
-        message: `User with email ${email} already exists. Please use a different email.`,
-        error: 'USER_EXISTS'
-      });
-    }
-
-    // Validate and extract face descriptor from photo
-    const faceValidation = { success: true, descriptor: new Float32Array(128), error: null }; // await validateFace(photo);
-    if (!faceValidation.success || !faceValidation.descriptor) {
-      return res.status(400).json({
-        message: faceValidation.error || 'Face validation failed.',
-        error: 'FACE_VALIDATION_FAILED',
-        details: faceValidation.error
-      });
-    }
-
-    // Convert Float32Array to regular array for MongoDB storage
-    const faceDescriptorArray = Array.from(faceValidation.descriptor);
-
-    // Create new user (password will be hashed by the pre-save hook)
-    const newUser = new User({
-      fullName: fullName.trim(),
-      email: email.toLowerCase().trim(),
-      password,
-      role: role as 'student' | 'examiner',
-      photo,
-      faceDescriptor: faceDescriptorArray,
-    });
-
-    // Save to MongoDB
-    await newUser.save();
-
-    // Generate a token so user can be logged in immediately after registration
-    const token = generateJwtForUser(newUser);
-
-    // Return success response (don't send password or face descriptor)
-    res.status(201).json({
-      message: 'Registration successful',
-      token,
-      user: { userId: (newUser._id as any).toString(), role: newUser.role, email: newUser.email, photo: newUser.photo }
-    });
-  } catch (error: any) {
-    console.error('Registration error:', error);
-
-    // Handle duplicate key error (MongoDB unique constraint)
-    if (error.code === 11000) {
-      return res.status(409).json({
-        message: 'User with this email already exists for this role.',
-        error: 'USER_EXISTS'
-      });
-    }
-
-    // Handle validation errors
-    if (error.name === 'ValidationError') {
-      const firstError = Object.values(error.errors)[0] as any;
-      return res.status(400).json({
-        message: firstError?.message || 'Validation failed',
-        error: 'VALIDATION_ERROR'
-      });
-    }
-
-    // Handle MongoDB connection errors
-    if (error.name === 'MongoServerError' || error.name === 'MongoNetworkError') {
-      return res.status(503).json({
-        message: 'Database connection error. Please try again later.',
-        error: 'DATABASE_ERROR'
-      });
-    }
-
-    res.status(500).json({
-      message: 'Registration failed. Please try again.',
-      error: 'INTERNAL_ERROR'
-    });
-  }
-});
-
-// Handles login from StudentLogin.tsx and ExaminerLogin.tsx
-app.post('/api/auth/:role/login', async (req: Request, res: Response) => {
-  try {
-    // Check MongoDB connection
-    if (mongoose.connection.readyState !== 1) {
-      return res.status(503).json({
-        message: 'Database connection not available. Please try again later.',
-        error: 'DATABASE_UNAVAILABLE'
-      });
-    }
-
-    const { role } = req.params;
-    const { email, password, photo } = req.body; // 'photo' is for face verification
-
-    // Validate input
-    if (!email || !password || !photo) {
-      return res.status(400).json({
-        message: 'Email, password, and photo are required.',
-        error: 'MISSING_FIELDS'
-      });
-    }
-
-    // Validate role
-    if (role !== 'student' && role !== 'examiner') {
-      return res.status(400).json({
-        message: 'Invalid role. Must be "student" or "examiner".',
-        error: 'INVALID_ROLE'
-      });
-    }
-
-    // Find user in MongoDB
-    const user = await User.findOne({ email: email.toLowerCase().trim(), role });
-
-    if (!user) {
-      return res.status(401).json({
-        message: 'Invalid email or password.',
-        error: 'INVALID_CREDENTIALS'
-      });
-    }
-
-    // Verify password using bcrypt comparison
-    const isPasswordValid = await user.comparePassword(password);
-
-    if (!isPasswordValid) {
-      return res.status(401).json({
-        message: 'Invalid email or password.',
-        error: 'INVALID_CREDENTIALS'
-      });
-    }
-
-    // Validate and extract face descriptor from login photo
-    const faceValidation = { success: true, descriptor: new Float32Array(128), error: null }; // await validateFace(photo);
-    if (!faceValidation.success || !faceValidation.descriptor) {
-      return res.status(400).json({
-        message: faceValidation.error || 'Face validation failed. Please ensure your face is clearly visible.',
-        error: 'FACE_DETECTION_FAILED',
-        details: faceValidation.error
-      });
-    }
-
-    // Verify face descriptor exists in user record
-    if (!user.faceDescriptor || !Array.isArray(user.faceDescriptor) || user.faceDescriptor.length === 0) {
-      return res.status(500).json({
-        message: 'Face data not found for this user. Please contact support.',
-        error: 'FACE_DATA_MISSING'
-      });
-    }
-
-    // Compare face with stored face descriptor
-    const storedDescriptor = new Float32Array(user.faceDescriptor);
-    const faceMatch = true; // compareFaces(faceValidation.descriptor, storedDescriptor);
-
-    if (!faceMatch) {
-      return res.status(401).json({
-        message: 'Face verification failed. The photo does not match your registered face.',
-        error: 'FACE_MISMATCH'
-      });
-    }
-
-    // Success - return user info (without password or face descriptor) and a signed JWT
-    const token = generateJwtForUser(user);
-    res.status(200).json({
-      message: 'Authentication Successful!',
-      token,
-      user: {
-        id: (user._id as any).toString(),
-        name: user.fullName,
-        role: user.role,
-        email: user.email,
-        photo: user.photo
-      }
-    });
-  } catch (error: any) {
-    console.error('Login error:', error);
-
-    // Handle MongoDB connection errors
-    if (error.name === 'MongoServerError' || error.name === 'MongoNetworkError') {
-      return res.status(503).json({
-        message: 'Database connection error. Please try again later.',
-        error: 'DATABASE_ERROR'
-      });
-    }
-
-    res.status(500).json({
-      message: 'Login failed. Please try again.',
-      error: 'INTERNAL_ERROR'
-    });
-  }
-});
 
 
 // Update profile image (photo) for authenticated user
