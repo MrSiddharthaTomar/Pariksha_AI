@@ -23,6 +23,7 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const CORS_ORIGIN = process.env.CORS_ORIGIN || (process.env.NODE_ENV === 'production' ? '' : 'http://localhost:8080');
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+const GEMINI_API_KEY= process.env.GEMINI_API_KEY;
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 const MONGODB_URI = process.env.MONGODB_URI;
 // JWT configuration
@@ -1058,6 +1059,89 @@ app.put('/api/examiner/tests/:testId', async (req: Request, res: Response) => {
   }
 });
 
+// TEMPORARY TEST ENDPOINT (no auth)
+app.post('/api/test/ai-generate', async (req: Request, res: Response) => {
+  const { aiPrompt } = req.body;
+
+  if (!aiPrompt || aiPrompt.trim().length === 0) {
+    return res.status(400).json({ message: 'AI prompt is required' });
+  }
+
+  let questions: any[] = [];
+
+  // Try Gemini directly
+  if (GEMINI_API_KEY) {
+    try {
+      console.log('Testing Gemini API...');
+      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          contents: [
+            {
+              parts: [
+                {
+                  text: `Generate multiple choice test questions based on: ${aiPrompt}. Return JSON array format: [{"question": "text", "options": ["opt1", "opt2", "opt3", "opt4"], "correctAnswer": 0}]`
+                }
+              ]
+            }
+          ],
+          generationConfig: {
+            temperature: 0.7,
+            maxOutputTokens: 1500,
+            topP: 0.95
+          }
+        })
+      });
+
+      const responseText = await response.text();
+      console.log('Gemini response status:', response.status);
+      console.log('Gemini response text:', responseText.substring(0, 500));
+
+      if (response.ok) {
+        const data = JSON.parse(responseText || '{}');
+        const content = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+        console.log('Gemini content extracted:', content.substring(0, 200));
+
+        if (content) {
+          const jsonMatch = content.match(/\[[\s\S]*\]/);
+          if (jsonMatch) {
+            const parsed = JSON.parse(jsonMatch[0]);
+            questions = parsed.map((q: any, idx: number) => ({
+              id: idx + 1,
+              question: q.question || '',
+              options: q.options || ['', '', '', ''],
+              correctAnswer: q.correctAnswer || 0
+            }));
+            console.log('Successfully parsed Gemini questions:', questions.length);
+          } else {
+            console.warn('Gemini response could not be parsed as JSON array:', content);
+          }
+        } else {
+          console.warn('Gemini response returned no text content:', data);
+        }
+      } else {
+        console.error('Gemini non-ok response:', response.status, responseText);
+      }
+    } catch (error) {
+      console.error('Gemini API error:', error);
+    }
+  }
+
+  // If still no questions, return mock
+  if (questions.length === 0) {
+    console.log('Using mock questions');
+    questions = [
+      { id: 1, question: "AI-Generated Q1: What is the derivative of x^2?", options: ["x", "2x", "2", "x/2"], correctAnswer: 1 },
+      { id: 2, question: "AI-Generated Q2: Solve ∫(1/x) dx.", options: ["e^x", "x^2", "ln|x|", "1"], correctAnswer: 2 },
+    ];
+  }
+
+  res.status(200).json({ questions });
+});
+
 // AI generation API for CreateTest.tsx
 
 // AI generation API for CreateTest.tsx
@@ -1069,7 +1153,7 @@ app.post('/api/examiner/ai-generate', async (req: Request, res: Response) => {
   }
 
   // Check if any AI API key is available
-  if (!OPENAI_API_KEY && !ANTHROPIC_API_KEY) {
+  if (!OPENAI_API_KEY && !ANTHROPIC_API_KEY && !GEMINI_API_KEY) {
     // Fallback to mock response if no API keys are configured
     console.warn('No AI API keys configured. Using mock response.');
     const mockQuestions: Question[] = [
@@ -1173,6 +1257,61 @@ app.post('/api/examiner/ai-generate', async (req: Request, res: Response) => {
         }
       } catch (error) {
         console.error('Anthropic API error:', error);
+      }
+    }
+
+    // Fallback to Gemini if Anthropic failed or not available
+    if (questions.length === 0 && GEMINI_API_KEY) {
+      try {
+        const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            contents: [
+              {
+                parts: [
+                  {
+                    text: `Generate multiple choice test questions based on: ${aiPrompt}. Return JSON array format: [{"question": "text", "options": ["opt1", "opt2", "opt3", "opt4"], "correctAnswer": 0}]`
+                  }
+                ]
+              }
+            ],
+            generationConfig: {
+              temperature: 0.7,
+              maxOutputTokens: 1500,
+              topP: 0.95
+            }
+          })
+        });
+
+        const responseText = await response.text();
+        if (response.ok) {
+          const data = JSON.parse(responseText || '{}');
+          const content = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+
+          if (content) {
+            const jsonMatch = content.match(/\[[\s\S]*\]/);
+            if (jsonMatch) {
+              const parsed = JSON.parse(jsonMatch[0]);
+              questions = parsed.map((q: any, idx: number) => ({
+                id: idx + 1,
+                question: q.question || '',
+                options: q.options || ['', '', '', ''],
+                correctAnswer: q.correctAnswer || 0
+              }));
+            } else {
+              console.warn('Gemini response could not be parsed as JSON array:', content);
+            }
+          } else {
+            console.warn('Gemini response returned no text content:', data);
+          }
+        } else {
+          console.error('Gemini non-ok response:', response.status, responseText);
+        }
+      } catch (error) {
+        console.error('Gemini API error:', error);
       }
     }
 
@@ -2282,7 +2421,10 @@ async function startServer() {
     if (ANTHROPIC_API_KEY) {
       console.log('✓ Anthropic API key configured');
     }
-    if (!OPENAI_API_KEY && !ANTHROPIC_API_KEY) {
+    if (GEMINI_API_KEY) {
+      console.log('✓ GEMINI API key configured');
+    }
+    if (!OPENAI_API_KEY && !ANTHROPIC_API_KEY && !GEMINI_API_KEY) {
       console.log('⚠ No AI API keys configured. AI generation will use mock mode.');
     }
   });
