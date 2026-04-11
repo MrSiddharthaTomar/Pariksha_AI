@@ -137,55 +137,54 @@ app.get('/api/load-models', async (req: Request, res: Response) => {
 app.use("/api/", router);
 
 // REMOVE FROM HERE PLEASE (USE ROUTES OR SOMETHING FOR THIS STUFF)
-// Handles registration from StudentRegister.tsx and ExaminerRegister.tsx
 
 
 // Update profile image (photo) for authenticated user
-app.put('/api/auth/profile-image', authenticateJWT, async (req: Request, res: Response) => {
-  try {
-    if (mongoose.connection.readyState !== 1) {
-      return res.status(503).json({
-        message: 'Database connection not available. Please try again later.',
-        error: 'DATABASE_UNAVAILABLE'
-      });
-    }
+// app.put('/api/auth/profile-image', authenticateJWT, async (req: Request, res: Response) => {
+//   try {
+//     if (mongoose.connection.readyState !== 1) {
+//       return res.status(503).json({
+//         message: 'Database connection not available. Please try again later.',
+//         error: 'DATABASE_UNAVAILABLE'
+//       });
+//     }
 
-    const userId = (req as any).user.id;
-    const { photo } = req.body;
+//     const userId = (req as any).user.id;
+//     const { photo } = req.body;
 
-    if (!photo) {
-      return res.status(400).json({
-        message: 'Photo is required.',
-        error: 'MISSING_FIELDS'
-      });
-    }
+//     if (!photo) {
+//       return res.status(400).json({
+//         message: 'Photo is required.',
+//         error: 'MISSING_FIELDS'
+//       });
+//     }
 
-    const user = await User.findById(userId);
-    if (!user) {
-      return res.status(404).json({ message: 'User not found.' });
-    }
+//     const user = await User.findById(userId);
+//     if (!user) {
+//       return res.status(404).json({ message: 'User not found.' });
+//     }
 
-    user.photo = photo;
-    await user.save();
+//     user.photo = photo;
+//     await user.save();
 
-    res.status(200).json({
-      message: 'Profile photo updated successfully',
-      user: {
-        id: (user._id as any).toString(),
-        name: user.fullName,
-        role: user.role,
-        email: user.email,
-        photo: user.photo
-      }
-    });
-  } catch (error: any) {
-    console.error('Profile image update error:', error);
-    res.status(500).json({
-      message: 'Failed to update profile photo.',
-      error: 'INTERNAL_ERROR'
-    });
-  }
-});
+//     res.status(200).json({
+//       message: 'Profile photo updated successfully',
+//       user: {
+//         id: (user._id as any).toString(),
+//         name: user.fullName,
+//         role: user.role,
+//         email: user.email,
+//         photo: user.photo
+//       }
+//     });
+//   } catch (error: any) {
+//     console.error('Profile image update error:', error);
+//     res.status(500).json({
+//       message: 'Failed to update profile photo.',
+//       error: 'INTERNAL_ERROR'
+//     });
+//   }
+// });
 
 
 // ===============================
@@ -198,7 +197,7 @@ app.use('/api/examiner', authenticateJWT, requireRole('examiner'));
 // Protect all /api/student endpoints: must present a valid JWT and be a student
 app.use('/api/student', authenticateJWT, requireRole('student'));
 
-// Fetches data for ExaminerDashboard.tsx (now fully backed by MongoDB, no hardcoded tests)
+// Fetches data for ExaminerDashboard.tsx
 app.get('/api/examiner/dashboard', async (req: Request, res: Response) => {
   try {
     const [totalTests, completedTests, scheduledTests, studentCount, recentTests] = await Promise.all([
