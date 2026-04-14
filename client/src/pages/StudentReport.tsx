@@ -72,7 +72,10 @@ const StudentReport = () => {
               <div className="flex gap-4">
                 <div className="text-right">
                   <p className="text-sm text-muted-foreground">Actual Score</p>
-                  <p className="text-3xl font-bold">{attempt ? attempt.totalScore + '%' : '-'}</p>
+                  <p className="text-3xl font-bold">{attempt ? `${attempt.scorePercent ?? attempt.totalScore}%` : '-'}</p>
+                  {attempt?.totalPossibleMarks !== undefined && (
+                    <p className="text-xs text-muted-foreground mt-1">{attempt.totalScore}/{attempt.totalPossibleMarks} points</p>
+                  )}
                 </div>
                 <div className="text-right">
                   <p className="text-sm text-muted-foreground">Trust Score</p>
@@ -102,6 +105,76 @@ const StudentReport = () => {
             </div>
           </CardContent>
         </Card>
+
+        {attempt?.questionResults?.length > 0 && (
+          <Card className="mb-6">
+            <CardHeader>
+              <CardTitle>Answer Review</CardTitle>
+              <CardDescription>See each answer that the student submitted with correctness and scoring details.</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="grid md:grid-cols-4 gap-4 mb-6">
+                <div className="p-4 bg-muted rounded-lg">
+                  <p className="text-sm text-muted-foreground">Total Questions</p>
+                  <p className="text-2xl font-bold mt-1">{attempt.questionResults.length}</p>
+                </div>
+                <div className="p-4 bg-muted rounded-lg">
+                  <p className="text-sm text-muted-foreground">Correct</p>
+                  <p className="text-2xl font-bold mt-1">{attempt.questionResults.filter((q: any) => q.status === 'correct').length}</p>
+                </div>
+                <div className="p-4 bg-muted rounded-lg">
+                  <p className="text-sm text-muted-foreground">Incorrect</p>
+                  <p className="text-2xl font-bold mt-1">{attempt.questionResults.filter((q: any) => q.status === 'incorrect').length}</p>
+                </div>
+                <div className="p-4 bg-muted rounded-lg">
+                  <p className="text-sm text-muted-foreground">Needs Review</p>
+                  <p className="text-2xl font-bold mt-1">{attempt.questionResults.filter((q: any) => q.status === 'needs review').length}</p>
+                </div>
+              </div>
+              <div className="space-y-4">
+                {attempt.questionResults.map((qr: any, index: number) => (
+                  <div key={`${qr.questionId}-${index}`} className="rounded-lg border bg-background p-4">
+                    <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-4">
+                      <div className="flex-1">
+                        <p className="text-sm text-muted-foreground">Question {index + 1}</p>
+                        <p className="font-semibold">{qr.questionText}</p>
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <Badge variant={qr.status === 'correct' ? 'success' : qr.status === 'incorrect' ? 'destructive' : 'secondary'}>
+                          {qr.status === 'correct' ? 'Correct' : qr.status === 'incorrect' ? 'Incorrect' : 'Needs Review'}
+                        </Badge>
+                        <div className="text-right">
+                          <p className="text-sm text-muted-foreground">Marks</p>
+                          <p className="font-semibold">{qr.marksObtained}/{qr.marks}</p>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="mt-4 grid gap-4 md:grid-cols-2">
+                      <div className="space-y-2">
+                        <p className="text-sm text-muted-foreground">Student Answer</p>
+                        <div className="rounded-lg border bg-muted p-3 text-sm whitespace-pre-wrap">{qr.studentAnswerText}</div>
+                      </div>
+                      <div className="space-y-2">
+                        <p className="text-sm text-muted-foreground">Correct Answer</p>
+                        <div className="rounded-lg border bg-muted p-3 text-sm whitespace-pre-wrap">
+                          {qr.correctAnswerText || 'N/A'}
+                        </div>
+                      </div>
+                    </div>
+
+                    {qr.type !== 'mcq' && qr.referenceAnswer && (
+                      <div className="mt-4 rounded-lg border bg-muted p-3 text-sm">
+                        <p className="text-sm text-muted-foreground">Reference Answer</p>
+                        <div className="whitespace-pre-wrap">{qr.referenceAnswer}</div>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </CardContent>
+          </Card>
+        )}
 
         {loading ? (
           <Card>

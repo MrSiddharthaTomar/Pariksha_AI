@@ -640,7 +640,95 @@ export const getStudentReport = async (req: Request, res: Response) => {
     // Fetch proctoring logs for this attempt
     const logs = await ProctoringLog.find({ attemptId: attempt._id }).sort({ timestamp: 1 }).lean();
 
-    const fallbackScore = (attempt.answers || []).reduce((acc: number, answer: any) => acc + (answer?.marksObtained ?? 0), 0);
+    const answers = attempt.answers || [];
+    const questionIdSet = new Set<string>();
+    answers.forEach((answer: any) => {
+      const questionId = (answer?.questionId as any)?.toString();
+      if (questionId) questionIdSet.add(questionId);
+    });
+    if (test?.questionIds && Array.isArray(test.questionIds)) {
+      test.questionIds.forEach((qId: any) => {
+        const stringId = (qId as any)?.toString?.();
+        if (stringId) questionIdSet.add(stringId);
+      });
+    }
+
+    const questionDocs = await Question.find({ _id: { $in: Array.from(questionIdSet) } }).lean();
+    const questionMap = new Map(questionDocs.map((q: any) => [((q._id as any).toString()), q]));
+
+    const questionResults = answers.map((answer: any, index: number) => {
+      const rawAnswer = answer?.answer;
+      const marksObtained = answer?.marksObtained ?? 0;
+      let questionId = (answer?.questionId as any)?.toString();
+      let question = questionId ? questionMap.get(questionId) : undefined;
+
+      if (!question && test?.questionIds && test.questionIds[index]) {
+        questionId = (test.questionIds[index] as any)?.toString();
+        question = questionMap.get(questionId);
+      }
+
+      const questionIndex = index + 1;
+      let status = 'ungraded';
+      let studentAnswerText: string = rawAnswer != null ? String(rawAnswer) : 'No answer provided';
+      let correctAnswerText: string | undefined;
+      let isCorrect = false;
+      let questionText = `Question #${questionIndex}`;
+      let type: any = 'mcq';
+      let marks = 1;
+      let options: string[] = [];
+      let referenceAnswer: string | undefined;
+      let correctAnswer: any = undefined;
+
+      if (question) {
+        questionText = question.questionText;
+        type = question.type;
+        options = question.options || [];
+        marks = question.marks ?? 1;
+        referenceAnswer = question.referenceAnswer;
+        correctAnswer = question.correctAnswer;
+
+        if (question.type === 'mcq') {
+          const selectedIndex = typeof rawAnswer === 'number' ? rawAnswer : Number(rawAnswer);
+          const correctIndex = typeof question.correctAnswer === 'number' ? question.correctAnswer : Number(question.correctAnswer);
+          studentAnswerText = Number.isFinite(selectedIndex) ? String(question.options?.[selectedIndex] ?? rawAnswer) : String(rawAnswer);
+          correctAnswerText = Number.isFinite(correctIndex) ? String(question.options?.[correctIndex] ?? question.correctAnswer) : String(question.correctAnswer ?? 'Not available');
+          isCorrect = Number.isFinite(selectedIndex) && selectedIndex === correctIndex;
+          status = isCorrect ? 'correct' : 'incorrect';
+        } else {
+          studentAnswerText = typeof rawAnswer === 'string' ? rawAnswer : JSON.stringify(rawAnswer || '');
+          correctAnswerText = referenceAnswer || 'Manual review required';
+          status = typeof answer?.marksObtained === 'number'
+            ? answer.marksObtained > 0
+              ? 'graded'
+              : 'needs review'
+            : 'needs review';
+        }
+      } else {
+        studentAnswerText = rawAnswer != null ? String(rawAnswer) : 'No answer provided';
+        correctAnswerText = 'No reference answer available';
+        status = answer?.isCorrect ? 'correct' : 'needs review';
+      }
+
+      return {
+        questionId,
+        questionText,
+        type,
+        options,
+        marks,
+        correctAnswer,
+        referenceAnswer,
+        studentAnswer: rawAnswer,
+        studentAnswerText,
+        correctAnswerText,
+        isCorrect,
+        status,
+        marksObtained,
+      };
+    });
+
+    const totalPossibleMarks = questionResults.reduce((acc, q) => acc + (q.marks ?? 0), 0);
+    const totalScore = typeof attempt.totalScore === 'number' ? attempt.totalScore : answers.reduce((acc: number, answer: any) => acc + (answer?.marksObtained ?? 0), 0);
+    const scorePercent = totalPossibleMarks > 0 ? Math.round((totalScore * 100) / totalPossibleMarks) : 0;
     const computedDuration = attempt.duration ?? (attempt.startedAt && attempt.endedAt ? Math.max(0, Math.round((attempt.endedAt.getTime() - attempt.startedAt.getTime()) / 60000)) : undefined);
 
     res.status(200).json({
@@ -654,11 +742,14 @@ export const getStudentReport = async (req: Request, res: Response) => {
         startedAt: attempt.startedAt,
         endedAt: attempt.endedAt,
         duration: computedDuration,
-        totalScore: typeof attempt.totalScore === 'number' ? attempt.totalScore : fallbackScore,
+        totalScore,
+        totalPossibleMarks,
+        scorePercent,
         trustScore: attempt.trustScore ?? 100,
         totalViolations: attempt.totalViolations ?? logs.length,
-        questionsAttempted: attempt.questionsAttempted ?? attempt.answers?.length ?? 0,
+        questionsAttempted: attempt.questionsAttempted ?? answers.length,
         answers: attempt.answers,
+        questionResults,
       },
       logs: logs.map((l: any) => ({
         id: (l._id as any).toString(),
