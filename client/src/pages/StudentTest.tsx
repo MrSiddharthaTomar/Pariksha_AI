@@ -120,6 +120,7 @@ const StudentTest = () => {
   const displayCheckIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const [blockedByMultiDisplay, setBlockedByMultiDisplay] = useState(false);
   const [multiDisplayMessage, setMultiDisplayMessage] = useState<string | null>(null);
+  const [showLogoutWarning, setShowLogoutWarning] = useState(false);
 
   const questions = test?.questions || [];
 
@@ -164,9 +165,24 @@ const StudentTest = () => {
             codingTestCases: q.codingTestCases
           })),
         });
-        setTimeLeft((data.duration || 60) * 60);
-        setCurrentQuestion(0);
-        setAnswers({});
+
+        // Load existing progress if available
+        if (data.progress) {
+          setCurrentQuestion(data.progress.currentQuestionIndex || 0);
+          setAnswers(data.progress.answers || {});
+          if (data.progress.timeRemaining !== undefined) {
+            setTimeLeft(data.progress.timeRemaining);
+          } else {
+            setTimeLeft((data.duration || 60) * 60);
+          }
+          if (data.progress.showLogoutWarning) {
+            setShowLogoutWarning(true);
+          }
+        } else {
+          setTimeLeft((data.duration || 60) * 60);
+          setCurrentQuestion(0);
+          setAnswers({});
+        }
 
         // Before starting, attempt to detect multiple displays (best-effort). If multiple displays are detected, block attempt
         const detectResult = await detectMultipleDisplays();
@@ -451,9 +467,93 @@ const StudentTest = () => {
     };
   }, []); // Only run once on mount
 
+  // Handle logout/session end recording
+  useEffect(() => {
+    const handleBeforeUnload = async () => {
+      try {
+        const testId = localStorage.getItem('testId');
+        const studentId = localStorage.getItem('studentId');
+        if (testId && studentId) {
+          await authFetch(getApiUrl('/api/student/record-logout'), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ studentId, testId }),
+          });
+        }
+      } catch (error) {
+        console.warn('Failed to record logout:', error);
+      }
+    };
+
+    // Record logout on page unload (logout/close tab)
+    window.addEventListener('beforeunload', handleBeforeUnload);
+
+    return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+      // Also record logout on component unmount
+      handleBeforeUnload();
+    };
+  }, []);
+
+  // Save progress to server
+  const saveProgress = async () => {
+    try {
+      const testId = localStorage.getItem('testId');
+      const studentId = localStorage.getItem('studentId');
+
+      if (!testId || !studentId) return;
+
+      await authFetch(getApiUrl('/api/student/save-progress'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          studentId,
+          testId,
+          currentQuestionIndex: currentQuestion,
+          timeRemaining: timeLeft,
+          answers,
+        }),
+      });
+    } catch (error) {
+      console.warn('Failed to save progress:', error);
+    }
+  };
+
+  // Save progress on unmount or when answers change
+  useEffect(() => {
+    return () => {
+      // Save progress when component unmounts
+      saveProgress();
+    };
+  }, []);
+
+  useEffect(() => {
+    // Save progress when answers change (immediately)
+    saveProgress();
+  }, [answers, currentQuestion, timeLeft]);
+
+  // Show logout warning
+  useEffect(() => {
+    if (showLogoutWarning) {
+      toast({
+        title: "Session Resumed",
+        description: "Warning: Do not close/refresh the tab or your exam might get cancelled. The timer has been running in the background.",
+        variant: "destructive",
+        duration: 10000, // Show for 10 seconds
+      });
+      setShowLogoutWarning(false); // Reset so it doesn't show again
+    }
+  }, [showLogoutWarning, toast]);
+
   // Timer
   useEffect(() => {
     if (!test) return;
+
+    // If time has already run out, submit immediately
+    if (timeLeft <= 0) {
+      handleSubmitTest();
+      return;
+    }
 
     const timer = setInterval(() => {
       setTimeLeft((prev) => {
@@ -466,9 +566,34 @@ const StudentTest = () => {
       });
     }, 1000);
 
-    return () => clearInterval(timer);
+    // Save progress every 30 seconds
+    const progressTimer = setInterval(() => {
+      saveProgress();
+    }, 30000);
+
+    return () => {
+      clearInterval(timer);
+      clearInterval(progressTimer);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [test]);
+
+  // Save progress on unmount
+  useEffect(() => {
+    return () => {
+      // Save progress when component unmounts
+      saveProgress();
+    };
+  }, []);
+
+  useEffect(() => {
+    // Save progress when answers change (debounced)
+    const timeoutId = setTimeout(() => {
+      saveProgress();
+    }, 2000); // Save 2 seconds after answer changes
+
+    return () => clearTimeout(timeoutId);
+  }, [answers, currentQuestion, timeLeft]);
 
   // Ensure video stream is properly set when live feed becomes visible
   useEffect(() => {

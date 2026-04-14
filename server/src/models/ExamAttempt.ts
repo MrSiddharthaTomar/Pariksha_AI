@@ -21,6 +21,13 @@ export interface IExamAttempt extends Document {
   trustScore: number;
   totalViolations: number;
   questionsAttempted: number;
+  // Progress tracking fields
+  currentQuestionIndex?: number;
+  timeRemaining?: number;
+  partialAnswers?: Record<string, any>;
+  // Session tracking for logout handling
+  lastLogoutAt?: Date;
+  sessionWarningsShown?: number;
   // latest frame data uri for live monitoring (optional)
   latestFrame?: string;
   latestFrameAt?: Date;
@@ -82,6 +89,26 @@ const ExamAttemptSchema = new Schema<IExamAttempt>(
       default: 0,
     },
     questionsAttempted: {
+      type: Number,
+      default: 0,
+    },
+    // Progress tracking fields
+    currentQuestionIndex: {
+      type: Number,
+      default: 0,
+    },
+    timeRemaining: {
+      type: Number,
+    },
+    partialAnswers: {
+      type: Schema.Types.Mixed,
+      default: {},
+    },
+    // Session tracking for logout handling
+    lastLogoutAt: {
+      type: Date,
+    },
+    sessionWarningsShown: {
       type: Number,
       default: 0,
     },

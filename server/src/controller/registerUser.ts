@@ -6,7 +6,6 @@ import {generateJwtForUser} from '../utils/jwt'
 
 export const registerUser = async (req: Request, res: Response) => {
   try {
-    console.log("Came here?");
     // Check MongoDB connection
     if (mongoose.connection.readyState !== 1) {
       return res.status(503).json({

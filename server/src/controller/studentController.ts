@@ -164,17 +164,50 @@ export const getTestById = async (req: Request, res: Response) => {
       });
     }
 
+    let existingProgress = null;
     if (studentId) {
       const existingAttempt = await ExamAttempt.findOne({
         testId,
         studentId,
-        status: 'submitted',
       });
-      if (existingAttempt) {
+
+      if (existingAttempt && existingAttempt.status === 'submitted') {
         return res.status(403).json({
           message: 'You have already submitted this test.',
           error: 'TEST_ALREADY_SUBMITTED',
         });
+      }
+
+      // If there's an in-progress attempt, include the progress data
+      if (existingAttempt && existingAttempt.status === 'in-progress') {
+        let timeRemaining = existingAttempt.timeRemaining;
+        let showLogoutWarning = false;
+
+        // Check if student logged out and logged back in
+        if (existingAttempt.lastLogoutAt) {
+          const now = new Date();
+          const logoutDuration = Math.floor((now.getTime() - existingAttempt.lastLogoutAt.getTime()) / 1000); // in seconds
+
+          // Subtract logout time from remaining time
+          if (timeRemaining !== undefined && timeRemaining > logoutDuration) {
+            timeRemaining = timeRemaining - logoutDuration;
+          } else if (timeRemaining !== undefined) {
+            timeRemaining = 0; // Time ran out during logout
+          }
+
+          // Clear the logout time since we're handling it now
+          existingAttempt.lastLogoutAt = undefined;
+          existingAttempt.sessionWarningsShown = (existingAttempt.sessionWarningsShown || 0) + 1;
+          showLogoutWarning = true;
+          await existingAttempt.save();
+        }
+
+        existingProgress = {
+          currentQuestionIndex: existingAttempt.currentQuestionIndex || 0,
+          timeRemaining,
+          answers: existingAttempt.partialAnswers || {},
+          showLogoutWarning,
+        };
       }
     }
 
@@ -227,6 +260,7 @@ export const getTestById = async (req: Request, res: Response) => {
       startTime: test.startTime,
       endTime: test.endTime,
       questions: orderedQuestions,
+      ...(existingProgress && { progress: existingProgress }),
     });
   } catch (error: any) {
     console.error('Get test error:', error);
@@ -562,5 +596,100 @@ export const submitTest = async (req: Request, res: Response) => {
   } catch (error: any) {
     console.error('Submit test error:', error);
     res.status(500).json({ message: 'Failed to submit test', error: error?.message });
+  }
+};
+
+export const saveProgress = async (req: Request, res: Response) => {
+  try {
+    if (mongoose.connection.readyState !== 1) {
+      return res.status(503).json({ message: 'Database connection not available', error: 'DATABASE_UNAVAILABLE' });
+    }
+
+    const { studentId, testId, currentQuestionIndex, timeRemaining, answers } = req.body;
+
+    if (!studentId || !testId) {
+      return res.status(400).json({ message: 'Missing required fields: studentId, testId', error: 'MISSING_FIELDS' });
+    }
+
+    // Find or create the attempt
+    let attempt = await ExamAttempt.findOne({ studentId, testId });
+    if (!attempt) {
+      // Create attempt if it doesn't exist
+      attempt = new ExamAttempt({
+        testId,
+        studentId,
+        status: 'in-progress',
+        startedAt: new Date(),
+        totalScore: 0,
+        trustScore: 100,
+        totalViolations: 0,
+        questionsAttempted: 0,
+        answers: [],
+        currentQuestionIndex: currentQuestionIndex || 0,
+        timeRemaining,
+        partialAnswers: answers || {},
+      });
+    }
+
+    if (attempt.status === 'submitted') {
+      return res.status(409).json({ message: 'Test already submitted', error: 'TEST_ALREADY_SUBMITTED' });
+    }
+
+    // Update progress fields
+    if (currentQuestionIndex !== undefined) {
+      attempt.currentQuestionIndex = currentQuestionIndex;
+    }
+    if (timeRemaining !== undefined) {
+      attempt.timeRemaining = timeRemaining;
+    }
+    if (answers !== undefined) {
+      attempt.partialAnswers = answers;
+    }
+
+    await attempt.save();
+
+    res.status(200).json({ message: 'Progress saved successfully' });
+  } catch (error: any) {
+    console.error('Save progress error:', error);
+    res.status(500).json({ message: 'Failed to save progress', error: error?.message });
+  }
+};
+
+export const recordLogout = async (req: Request, res: Response) => {
+  try {
+    if (mongoose.connection.readyState !== 1) {
+      return res.status(503).json({ message: 'Database connection not available', error: 'DATABASE_UNAVAILABLE' });
+    }
+
+    let { studentId, testId } = req.body;
+
+    // If studentId not supplied, get it from JWT
+    if (!studentId) {
+      const user = (req as any).user;
+      if (user && user.id) studentId = user.id;
+    }
+
+    if (!studentId || !testId) {
+      return res.status(400).json({ message: 'Missing required fields: studentId, testId', error: 'MISSING_FIELDS' });
+    }
+
+    // Find the attempt
+    const attempt = await ExamAttempt.findOne({ studentId, testId });
+    if (!attempt) {
+      return res.status(404).json({ message: 'Attempt not found', error: 'ATTEMPT_NOT_FOUND' });
+    }
+
+    if (attempt.status === 'submitted') {
+      return res.status(409).json({ message: 'Test already submitted', error: 'TEST_ALREADY_SUBMITTED' });
+    }
+
+    // Record logout time
+    attempt.lastLogoutAt = new Date();
+    await attempt.save();
+
+    res.status(200).json({ message: 'Logout recorded successfully' });
+  } catch (error: any) {
+    console.error('Record logout error:', error);
+    res.status(500).json({ message: 'Failed to record logout', error: error?.message });
   }
 };
