@@ -87,7 +87,7 @@ const StudentReport = () => {
             <div className="grid md:grid-cols-3 gap-4">
               <div className="p-4 bg-muted rounded-lg">
                 <p className="text-sm text-muted-foreground">Total Violations</p>
-                <p className="text-2xl font-bold mt-1">{logs.length}</p>
+                <p className="text-2xl font-bold mt-1">{attempt ? Math.max(attempt.totalViolations ?? 0, logs.length) : 0}</p>
               </div>
               <div className="p-4 bg-muted rounded-lg">
                 <p className="text-sm text-muted-foreground">Test Duration</p>
@@ -95,7 +95,9 @@ const StudentReport = () => {
               </div>
               <div className="p-4 bg-muted rounded-lg">
                 <p className="text-sm text-muted-foreground">Questions Answered</p>
-                <p className="text-2xl font-bold mt-1">{attempt?.answers ? `${attempt.answers.length}/${attempt.questionsAttempted || attempt.answers.length}` : '-'}</p>
+                <p className="text-2xl font-bold mt-1">
+                  {attempt ? (attempt.questionsAttempted ?? attempt.answers?.length ?? 0) : '-'}
+                </p>
               </div>
             </div>
           </CardContent>

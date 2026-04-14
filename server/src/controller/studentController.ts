@@ -534,16 +534,30 @@ export const submitTest = async (req: Request, res: Response) => {
     if (!test) return res.status(404).json({ message: 'Test not found' });
 
     const questionsMap: Record<string, any> = {};
+    const orderedQuestionIds: string[] = [];
     (test.questionIds as any[]).forEach((q: any) => {
-      questionsMap[(q._id as any).toString()] = q;
+      const qId = (q._id as any).toString();
+      questionsMap[qId] = q;
+      orderedQuestionIds.push(qId);
+    });
+
+    const normalizedAnswers: Record<string, any> = {};
+    Object.entries(answers).forEach(([qKey, value]) => {
+      let normalizedKey = qKey;
+      if (!questionsMap[normalizedKey] && /^[0-9]+$/.test(qKey)) {
+        const numericIndex = Number(qKey);
+        const mappedId = orderedQuestionIds[numericIndex - 1];
+        if (mappedId) normalizedKey = mappedId;
+      }
+      normalizedAnswers[normalizedKey] = value;
     });
 
     let totalScore = 0;
-    const processedAnswers = Object.keys(answers).map((qId: string) => {
+    const processedAnswers = Object.keys(normalizedAnswers).map((qId: string) => {
       const question = questionsMap[qId];
       if (!question) return null; // Should not happen
 
-      const submittedAns = answers[qId];
+      const submittedAns = normalizedAnswers[qId];
 
       // Auto-grade MCQ
       let isCorrect = false;
@@ -579,6 +593,9 @@ export const submitTest = async (req: Request, res: Response) => {
     attempt.answers = processedAnswers as any;
     attempt.totalScore = totalScore;
     attempt.questionsAttempted = processedAnswers.length;
+    if (attempt.startedAt && attempt.endedAt) {
+      attempt.duration = Math.max(0, Math.round((attempt.endedAt.getTime() - attempt.startedAt.getTime()) / 60000));
+    }
 
     // Process violations if any sent from client (though usually they are streamed)
     if (Array.isArray(violations)) {

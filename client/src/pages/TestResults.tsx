@@ -254,7 +254,7 @@ const TestResults = () => {
                           size="sm"
                           onClick={(e) => {
                             e.stopPropagation();
-                            navigate(`/examiner/report/${student.studentId || student.attemptId}/${testId}`);
+                            navigate(`/examiner/report/${student.attemptId}/${testId}`);
                           }}
                         >
                           View Report

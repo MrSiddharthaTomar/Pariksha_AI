@@ -550,13 +550,14 @@ export const getTestResults = async (req: Request, res: Response) => {
     const students = await Promise.all(attempts.map(async (a: any) => {
       const student = a.studentId as any;
       const violations = await ProctoringLog.countDocuments({ attemptId: a._id });
+      const fallbackScore = (a.answers || []).reduce((acc: number, answer: any) => acc + (answer?.marksObtained ?? 0), 0);
       return {
         attemptId: (a._id as any).toString(),
         studentId: (student?._id as any)?.toString() || null,
         name: student?.fullName || student?.name || 'Unknown',
         email: student?.email || 'unknown',
-        actualScore: a.totalScore ?? 0,
-        trustScore: a.trustScore ?? 0,
+        actualScore: typeof a.totalScore === 'number' ? a.totalScore : fallbackScore,
+        trustScore: a.trustScore ?? 100,
         violationsCount: a.totalViolations ?? violations ?? 0,
         status: a.status,
       };
@@ -639,6 +640,9 @@ export const getStudentReport = async (req: Request, res: Response) => {
     // Fetch proctoring logs for this attempt
     const logs = await ProctoringLog.find({ attemptId: attempt._id }).sort({ timestamp: 1 }).lean();
 
+    const fallbackScore = (attempt.answers || []).reduce((acc: number, answer: any) => acc + (answer?.marksObtained ?? 0), 0);
+    const computedDuration = attempt.duration ?? (attempt.startedAt && attempt.endedAt ? Math.max(0, Math.round((attempt.endedAt.getTime() - attempt.startedAt.getTime()) / 60000)) : undefined);
+
     res.status(200).json({
       student: {
         id: (attempt.studentId as any)?._id?.toString() || studentId,
@@ -649,9 +653,11 @@ export const getStudentReport = async (req: Request, res: Response) => {
         id: (attempt._id as any).toString(),
         startedAt: attempt.startedAt,
         endedAt: attempt.endedAt,
-        duration: attempt.duration,
-        totalScore: attempt.totalScore,
-        trustScore: attempt.trustScore,
+        duration: computedDuration,
+        totalScore: typeof attempt.totalScore === 'number' ? attempt.totalScore : fallbackScore,
+        trustScore: attempt.trustScore ?? 100,
+        totalViolations: attempt.totalViolations ?? logs.length,
+        questionsAttempted: attempt.questionsAttempted ?? attempt.answers?.length ?? 0,
         answers: attempt.answers,
       },
       logs: logs.map((l: any) => ({
