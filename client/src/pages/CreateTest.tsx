@@ -302,6 +302,7 @@ const CreateTest = () => {
           ...q,
           question: (q.question || '').toString().trim(),
           options: Array.isArray(q.options) ? q.options.map((o: any) => (o || '').toString().trim()).filter(Boolean) : [],
+          codingTestCases: undefined
         };
       }
     }).filter((q) => {

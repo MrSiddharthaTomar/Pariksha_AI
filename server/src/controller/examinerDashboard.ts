@@ -50,6 +50,7 @@ export const examinerDashboard = async (req: Request, res: Response) => {
     res.status(200).json(dashboardData);
   } catch (error: any) {
     console.error('Dashboard error:', error);
-    res.status(500).json({ message: 'Failed to fetch dashboard data.' });
+    res.status(500).json({ message: 'Failed to fetch dashboard data.', error: error.message });
+    console.log(error);
   }
 };

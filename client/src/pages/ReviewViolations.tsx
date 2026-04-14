@@ -92,6 +92,9 @@ const ReviewViolations = () => {
                     <div className="flex items-center gap-3">
                       <div className="text-sm text-muted-foreground flex items-center gap-2"><Users className="w-4 h-4" />{t.students} students</div>
                       <div className="text-sm text-muted-foreground flex items-center gap-2">Attempts: <strong>{t.activeAttempts ?? 0}</strong></div>
+                      {t.unreviewedViolations > 0 && (
+                        <div className="px-2 py-1 rounded-full text-sm bg-red-100 text-red-700">{t.unreviewedViolations} pending</div>
+                      )}
                       <Button size="sm" variant="outline" onClick={() => navigate(`/examiner/ReviewViolations/${t.id}`)}>Open Review</Button>
                     </div>
                   </div>
