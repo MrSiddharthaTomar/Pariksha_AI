@@ -173,32 +173,83 @@ export async function extractFrameFromVideo(videoBuffer: Buffer): Promise<string
     fs.writeFileSync(tempVideoPath, videoBuffer);
     
     try {
-      // Use ffmpeg to extract a frame (middle of video)
-      // Install ffmpeg: https://ffmpeg.org/download.html
-      await execAsync(
-        `ffmpeg -i "${tempVideoPath}" -ss 00:00:05 -vframes 1 "${tempImagePath}" -y`
-      );
+      // Try multiple FFmpeg approaches for WebM files
+      let ffmpegSuccess = false;
       
-      // Read the extracted frame
-      const frameBuffer = fs.readFileSync(tempImagePath);
-      const base64Image = frameBuffer.toString('base64');
-      const dataUrl = `data:image/jpeg;base64,${base64Image}`;
+      // First attempt: standard extraction
+      try {
+        await execAsync(
+          `ffmpeg -i "${tempVideoPath}" -ss 00:00:05 -vframes 1 "${tempImagePath}" -y`,
+          { timeout: 10000 }
+        );
+        ffmpegSuccess = true;
+      } catch (firstError) {
+        console.warn('FFmpeg standard extraction failed, trying alternative...');
+        
+        // Second attempt: with explicit format
+        try {
+          await execAsync(
+            `ffmpeg -f webm -i "${tempVideoPath}" -ss 00:00:05 -vframes 1 "${tempImagePath}" -y`,
+            { timeout: 10000 }
+          );
+          ffmpegSuccess = true;
+        } catch (secondError) {
+          console.warn('FFmpeg alternative extraction failed, trying basic extraction...');
+          
+          // Third attempt: basic extraction without seeking
+          try {
+            await execAsync(
+              `ffmpeg -i "${tempVideoPath}" -vframes 1 "${tempImagePath}" -y`,
+              { timeout: 10000 }
+            );
+            ffmpegSuccess = true;
+          } catch (thirdError) {
+            console.error('All FFmpeg extraction attempts failed:', thirdError instanceof Error ? thirdError.message : String(thirdError));
+          }
+        }
+      }
       
-      // Cleanup temp files
-      fs.unlinkSync(tempVideoPath);
-      fs.unlinkSync(tempImagePath);
-      
-      return dataUrl;
+      if (ffmpegSuccess && fs.existsSync(tempImagePath)) {
+        // Read the extracted frame
+        const frameBuffer = fs.readFileSync(tempImagePath);
+        const base64Image = frameBuffer.toString('base64');
+        const dataUrl = `data:image/jpeg;base64,${base64Image}`;
+        
+        // Cleanup temp files
+        fs.unlinkSync(tempVideoPath);
+        fs.unlinkSync(tempImagePath);
+        
+        return dataUrl;
+      } else {
+        throw new Error('FFmpeg extraction failed');
+      }
     } catch (ffmpegError) {
-      // If ffmpeg is not available, use a placeholder or return empty
-      console.warn('FFmpeg not available, using placeholder frame');
+      // If ffmpeg is not available or fails, create a simple placeholder image
+      console.warn('FFmpeg not available or failed, creating placeholder frame');
+      
+      // Create a simple 640x480 placeholder image
+      const { createCanvas } = require('canvas');
+      const canvas = createCanvas(640, 480);
+      const ctx = canvas.getContext('2d');
+      
+      // Fill with gray background
+      ctx.fillStyle = '#666666';
+      ctx.fillRect(0, 0, 640, 480);
+      
+      // Add text
+      ctx.fillStyle = '#ffffff';
+      ctx.font = '24px Arial';
+      ctx.textAlign = 'center';
+      ctx.fillText('Video Frame Unavailable', 320, 240);
+      ctx.fillText('FFmpeg Processing Failed', 320, 280);
+      
+      const dataUrl = canvas.toDataURL('image/jpeg', 0.8);
       
       // Cleanup
       if (fs.existsSync(tempVideoPath)) fs.unlinkSync(tempVideoPath);
       if (fs.existsSync(tempImagePath)) fs.unlinkSync(tempImagePath);
       
-      // Return a placeholder (you might want to handle this differently)
-      return '';
+      return dataUrl;
     }
   } catch (error: any) {
     console.error('Error extracting frame from video:', error);

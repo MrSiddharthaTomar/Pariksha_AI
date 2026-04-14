@@ -987,10 +987,15 @@ export const getProctoringImage = async (req: Request, res: Response) => {
     if (!mongoose.isValidObjectId(imageId)) return res.status(400).json({ message: 'Invalid image id' });
     const bucket = getCheatingImagesBucket();
     const _id = new mongoose.Types.ObjectId(imageId);
+
+    // Stream image bytes from GridFS and send as JPEG if no other content type is available.
+    res.setHeader('Content-Type', 'image/jpeg');
     const download = bucket.openDownloadStream(_id);
     download.on('error', (err) => {
       console.error('GridFS download error:', err);
-      res.status(404).json({ message: 'Image not found' });
+      if (!res.headersSent) {
+        res.status(404).json({ message: 'Image not found' });
+      }
     });
     download.pipe(res);
   } catch (error: any) {

@@ -14,10 +14,23 @@ export const generateJwtForUser = (user: any) => {
 
 export const authenticateJWT = (req: Request, res: Response, next: Function) => {
   const authHeader = (req.headers['authorization'] || '') as string;
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    return res.status(401).json({ message: 'Missing or invalid Authorization header' });
+  let token = '';
+
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    token = authHeader.split(' ')[1];
   }
-  const token = authHeader.split(' ')[1];
+
+  if (!token && req.query) {
+    const queryToken = (req.query as any).token;
+    if (typeof queryToken === 'string' && queryToken.trim()) {
+      token = queryToken.trim();
+    }
+  }
+
+  if (!token) {
+    return res.status(401).json({ message: 'Missing or invalid authentication token' });
+  }
+
   try {
     const decoded = jwt.verify(token, JWT_SECRET) as any;
     // attach to request

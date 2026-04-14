@@ -261,22 +261,69 @@ def analyze_video_file(path, max_frames=8):
             frames_dir = path.replace('.webm', '_frames')
             os.makedirs(frames_dir, exist_ok=True)
             
-            # Extract frames using ffmpeg
+            # Extract frames using ffmpeg with better error handling
             print(f"DEBUG: Extracting frames to {frames_dir}")
-            result = subprocess.run(
-                [
-                    'ffmpeg',
-                    '-i', path,
-                    '-vf', f'fps=1',  # 1 frame per second
-                    os.path.join(frames_dir, 'frame_%04d.png')
-                ],
+            
+            # First try to get video info
+            info_result = subprocess.run(
+                ['ffmpeg', '-i', path],
                 capture_output=True,
-                timeout=30
+                timeout=10
             )
             
+            if info_result.returncode != 0:
+                print(f"DEBUG: FFmpeg info failed, trying alternative approach")
+                # Try with different options for WebM
+                result = subprocess.run(
+                    [
+                        'ffmpeg',
+                        '-f', 'webm',
+                        '-i', path,
+                        '-vf', 'fps=1',
+                        '-q:v', '2',  # Better quality
+                        os.path.join(frames_dir, 'frame_%04d.png')
+                    ],
+                    capture_output=True,
+                    timeout=30
+                )
+            else:
+                # Standard extraction
+                result = subprocess.run(
+                    [
+                        'ffmpeg',
+                        '-i', path,
+                        '-vf', 'fps=1',
+                        '-q:v', '2',
+                        os.path.join(frames_dir, 'frame_%04d.png')
+                    ],
+                    capture_output=True,
+                    timeout=30
+                )
+            
             if result.returncode != 0:
-                print(f"ERROR: ffmpeg frame extraction failed: {result.stderr.decode()[:500]}")
-                return {"hasViolation": False, "error": "Could not extract frames from video"}
+                stderr_output = result.stderr.decode()[:500]
+                print(f"ERROR: ffmpeg frame extraction failed: {stderr_output}")
+                
+                # Try one more time with different codec options
+                print("DEBUG: Trying alternative FFmpeg command...")
+                alt_result = subprocess.run(
+                    [
+                        'ffmpeg',
+                        '-i', path,
+                        '-c:v', 'libvpx-vp9',  # Force codec
+                        '-vf', 'fps=1',
+                        '-q:v', '2',
+                        os.path.join(frames_dir, 'frame_%04d.png')
+                    ],
+                    capture_output=True,
+                    timeout=30
+                )
+                
+                if alt_result.returncode != 0:
+                    print(f"ERROR: Alternative ffmpeg also failed")
+                    return {"hasViolation": False, "error": "Could not extract frames from video"}
+                else:
+                    result = alt_result
             
             # Get list of extracted frames
             import glob
