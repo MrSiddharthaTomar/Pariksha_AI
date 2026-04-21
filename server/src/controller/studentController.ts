@@ -422,57 +422,6 @@ export const processProctorChunk = async (req: Request, res: Response) => {
         severity,
       });
     } else {
-      // No violation detected by ML, but let's create a test violation with image for debugging
-      console.log(`[PROCTOR] No violation detected by ML, but creating test violation for image testing`);
-      
-      let imageId: mongoose.Types.ObjectId | undefined;
-      try {
-        if (frameImage) {
-          const bucket = getCheatingImagesBucket();
-          const base64Data = frameImage.includes(',') 
-            ? frameImage.split(',')[1] 
-            : frameImage.replace(/^data:image\/\w+;base64,/, '');
-          const imageBuffer = Buffer.from(base64Data, 'base64');
-
-          await new Promise<void>((resolve, reject) => {
-            const uploadStream = bucket.openUploadStream(`test_violation_${Date.now()}.jpg`, {
-              metadata: {
-                attemptId: attempt!._id,
-                timestamp: logTimestamp,
-                label: 'Test Violation',
-                severity: 'low',
-              },
-            });
-            uploadStream.on('error', reject);
-            uploadStream.on('finish', () => {
-              imageId = uploadStream.id as mongoose.Types.ObjectId;
-              resolve();
-            });
-            uploadStream.end(imageBuffer);
-          });
-          console.log(`[PROCTOR] Saved test violation image to GridFS`);
-        }
-      } catch (gridfsError) {
-        console.error('[PROCTOR] Error saving test proctoring image to GridFS:', gridfsError);
-      }
-
-      // Create a test proctoring log document
-      const testLog = new ProctoringLog({
-        attemptId: attempt._id,
-        timestamp: logTimestamp,
-        label: 'Test Violation',
-        severity: 'low',
-        imageId,
-      });
-
-      await testLog.save();
-      console.log(`[PROCTOR] ✓ Created test violation log for image testing`);
-
-      // Update trust score and violation count on the attempt
-      attempt.totalViolations += 1;
-      attempt.trustScore = Math.max(0, attempt.trustScore - 2);
-      await attempt.save();
-
       console.log(`[PROCTOR] No violation in chunk from student ${studentId} (latest frame saved)`);
       res.status(200).json({
         message: 'Chunk processed successfully',
@@ -672,21 +621,7 @@ export const submitTest = async (req: Request, res: Response) => {
         attempt.totalViolations = Math.max(attempt.totalViolations || 0, existingLogCount, violations.length);
       }
     } else {
-      // If no violations from client but ML processing failed, create a test violation for debugging
-      // This ensures we have some data to test the image display functionality
-      const existingLogCount = await ProctoringLog.countDocuments({ attemptId: attempt._id });
-      if (existingLogCount === 0) {
-        console.log('[DEBUG] No violations detected, creating test violation for image testing');
-        const testViolation = {
-          attemptId: attempt._id,
-          timestamp: new Date(),
-          label: 'Test Violation' as const,
-          severity: 'low' as const,
-        };
-        await ProctoringLog.create(testViolation);
-        attempt.totalViolations = 1;
-        attempt.trustScore = Math.max(0, (attempt.trustScore || 100) - 2);
-      }
+      // No violations
     }
 
     await attempt.save();
