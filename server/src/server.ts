@@ -32,16 +32,18 @@ const app = express();
 // ============================================
 const corsOptions = {
   origin: (origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) => {
-    if (!origin || !CORS_ORIGIN) return callback(null, true); // Allow no-origin or in production
-    if (origin === CORS_ORIGIN || origin.includes('localhost')) {
+    if (!origin) return callback(null, true);
+
+    if (
+      origin.includes('localhost') ||
+      origin.includes('192.168.')
+    ) {
       callback(null, true);
     } else {
       callback(new Error('Not allowed by CORS'));
     }
   },
   credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization']
 };
 
 app.use(cors(corsOptions));
@@ -131,11 +133,16 @@ const startServer = async () => {
     // Connect to MongoDB
     await connectMongoDB();
 
+    // Load face recognition models
+    const { loadFaceModels } = await import('./utils/faceRecognition');
+    await loadFaceModels();
+
     // Start listening
     const server = app.listen(PORT, () => {
       console.log('\n========================================');
       console.log('Pariksha AI Backend Server');
       console.log('========================================');
+
       console.log(`✓ Server running on http://localhost:${PORT}`);
       console.log(`✓ Environment: ${NODE_ENV}`);
       console.log(`✓ CORS Origin: ${CORS_ORIGIN || 'all'}`);
