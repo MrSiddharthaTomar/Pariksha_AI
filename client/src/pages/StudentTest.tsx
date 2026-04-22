@@ -124,11 +124,15 @@ const StudentTest = () => {
   const [attemptId, setAttemptId] = useState<string | null>(null);
   const [fullscreenWarnings, setFullscreenWarnings] = useState(0);
   const [showFullscreenWarning, setShowFullscreenWarning] = useState(false);
+  const [isFullscreenActive, setIsFullscreenActive] = useState(!!document.fullscreenElement);
+  const [timeOutsideFullscreenSeconds, setTimeOutsideFullscreenSeconds] = useState(0);
   const [isTimerHydrated, setIsTimerHydrated] = useState(false);
   const isTimerHydratedRef = useRef(false);
   const autoSubmitTriggeredRef = useRef(false);
   const questionEnteredAtRef = useRef<number>(Date.now());
   const activityQueueRef = useRef<any[]>([]);
+  const outsideFullscreenStartedAtRef = useRef<number | null>(null);
+  const outsideFullscreenIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
   // Refs for recording
   const liveFeedRef = useRef<HTMLVideoElement>(null);
@@ -273,6 +277,32 @@ const StudentTest = () => {
   useEffect(() => {
     if (!test) return;
 
+    const startOutsideFullscreenTimer = () => {
+      if (outsideFullscreenStartedAtRef.current !== null) return;
+      outsideFullscreenStartedAtRef.current = Date.now();
+      outsideFullscreenIntervalRef.current = setInterval(() => {
+        const startedAt = outsideFullscreenStartedAtRef.current;
+        if (startedAt === null) return;
+        const elapsedSeconds = Math.floor((Date.now() - startedAt) / 1000);
+        setTimeOutsideFullscreenSeconds((prev) => prev + 1);
+        if (elapsedSeconds > 0 && elapsedSeconds % 30 === 0) {
+          enqueueActivityEvent({
+            eventType: 'warning_shown',
+            questionIndex: currentQuestion,
+            meta: { warningType: 'fullscreen_still_exited', outsideSeconds: elapsedSeconds },
+          });
+        }
+      }, 1000);
+    };
+
+    const stopOutsideFullscreenTimer = () => {
+      if (outsideFullscreenIntervalRef.current) {
+        clearInterval(outsideFullscreenIntervalRef.current);
+        outsideFullscreenIntervalRef.current = null;
+      }
+      outsideFullscreenStartedAtRef.current = null;
+    };
+
     const onVisibilityChange = () => {
       if (document.hidden) {
         enqueueActivityEvent({ eventType: 'tab_hidden', questionIndex: currentQuestion });
@@ -293,11 +323,27 @@ const StudentTest = () => {
       const inFullscreen = !!document.fullscreenElement;
       if (inFullscreen) {
         enqueueActivityEvent({ eventType: 'fullscreen_enter', questionIndex: currentQuestion });
+        if (outsideFullscreenStartedAtRef.current !== null) {
+          const outsideDurationMs = Math.max(0, Date.now() - outsideFullscreenStartedAtRef.current);
+          enqueueActivityEvent({
+            eventType: 'warning_shown',
+            questionIndex: currentQuestion,
+            durationMs: outsideDurationMs,
+            meta: {
+              warningType: 'fullscreen_reentered',
+              outsideSeconds: Math.floor(outsideDurationMs / 1000),
+            },
+          });
+        }
+        stopOutsideFullscreenTimer();
+        setIsFullscreenActive(true);
         setShowFullscreenWarning(false);
       } else {
         enqueueActivityEvent({ eventType: 'fullscreen_exit', questionIndex: currentQuestion });
         setFullscreenWarnings((prev) => prev + 1);
+        setIsFullscreenActive(false);
         setShowFullscreenWarning(true);
+        startOutsideFullscreenTimer();
         enqueueActivityEvent({
           eventType: 'warning_shown',
           questionIndex: currentQuestion,
@@ -311,6 +357,14 @@ const StudentTest = () => {
     window.addEventListener('focus', onFocus);
     document.addEventListener('fullscreenchange', onFullscreenChange);
 
+    if (!document.fullscreenElement) {
+      setIsFullscreenActive(false);
+      startOutsideFullscreenTimer();
+    } else {
+      setIsFullscreenActive(true);
+      stopOutsideFullscreenTimer();
+    }
+
     const flushId = setInterval(() => {
       flushActivityEvents();
     }, 5000);
@@ -320,6 +374,7 @@ const StudentTest = () => {
       window.removeEventListener('blur', onBlur);
       window.removeEventListener('focus', onFocus);
       document.removeEventListener('fullscreenchange', onFullscreenChange);
+      stopOutsideFullscreenTimer();
       clearInterval(flushId);
       flushActivityEvents();
     };
@@ -929,6 +984,27 @@ const StudentTest = () => {
 
   return (
     <div className="min-h-screen bg-gradient-hero p-4 relative">
+      {!isFullscreenActive && (
+        <div className="fixed inset-0 z-[60] bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
+          <Card className="w-full max-w-md border-amber-300">
+            <CardHeader>
+              <CardTitle className="text-amber-700">Fullscreen Required</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <p className="text-sm text-muted-foreground">
+                Test interaction is locked until you return to fullscreen mode.
+              </p>
+              <div className="text-sm font-medium">
+                Time outside fullscreen: {formatTime(timeOutsideFullscreenSeconds)} ({timeOutsideFullscreenSeconds}s)
+              </div>
+              <Button className="w-full" onClick={requestFullscreenMode}>
+                Return to Fullscreen
+              </Button>
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
       {/* Live Camera Feed - Top Right Corner (Toggleable) */}
       {showLiveFeed && (
         <div className="fixed top-16 right-4 z-50 w-64 h-48 bg-black rounded-lg overflow-hidden shadow-2xl border-2 border-primary">
@@ -994,7 +1070,7 @@ const StudentTest = () => {
         </div>
       </div>
 
-      <div className="container max-w-7xl mx-auto py-6">
+      <div className={`container max-w-7xl mx-auto py-6 ${!isFullscreenActive ? 'pointer-events-none select-none opacity-80' : ''}`}>
         <div className="grid lg:grid-cols-10 gap-6">
           {/* Main Test Area - 70% width */}
           <div className="lg:col-span-7 space-y-6">

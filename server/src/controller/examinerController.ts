@@ -7,6 +7,7 @@ import TestRecording from '../models/TestRecording';
 import ProctoringLog from '../models/ProctoringLog';
 import Question from '../models/Question';
 import ExamAttempt from '../models/ExamAttempt';
+import AttemptEventLog from '../models/AttemptEventLog';
 import { getCheatingImagesBucket } from '../utils/gridfs';
 
 export const examinerDashboard = async (req: Request, res: Response) => {
@@ -639,6 +640,49 @@ export const getStudentReport = async (req: Request, res: Response) => {
 
     // Fetch proctoring logs for this attempt
     const logs = await ProctoringLog.find({ attemptId: attempt._id }).sort({ timestamp: 1 }).lean();
+    const activityEvents = await AttemptEventLog.find({
+      attemptId: attempt._id,
+      eventType: { $in: ['fullscreen_exit', 'fullscreen_enter'] }
+    }).sort({ timestamp: 1 }).lean();
+
+    const fullscreenEvents: Array<{ eventType: 'fullscreen_exit' | 'fullscreen_enter'; timestamp: Date }> = activityEvents
+      .map((event: any) => ({
+        eventType: event.eventType as 'fullscreen_exit' | 'fullscreen_enter',
+        timestamp: event.timestamp ? new Date(event.timestamp) : null,
+      }))
+      .filter((event: { eventType: 'fullscreen_exit' | 'fullscreen_enter'; timestamp: Date | null }): event is { eventType: 'fullscreen_exit' | 'fullscreen_enter'; timestamp: Date } => (
+        event.timestamp instanceof Date && !Number.isNaN(event.timestamp.getTime())
+      ));
+
+    let activeExitAt: Date | null = null;
+    const fullscreenSessions: Array<{ exitedAt: Date; returnedAt: Date | null; durationSeconds: number }> = [];
+
+    for (const event of fullscreenEvents) {
+      if (event.eventType === 'fullscreen_exit') {
+        // Keep earliest unmatched exit until corresponding enter
+        if (!activeExitAt) activeExitAt = event.timestamp;
+      } else if (event.eventType === 'fullscreen_enter' && activeExitAt) {
+        const durationSeconds = Math.max(0, Math.round((event.timestamp.getTime() - activeExitAt.getTime()) / 1000));
+        fullscreenSessions.push({
+          exitedAt: activeExitAt,
+          returnedAt: event.timestamp,
+          durationSeconds,
+        });
+        activeExitAt = null;
+      }
+    }
+
+    if (activeExitAt) {
+      const fallbackReturnAt = attempt.endedAt ? new Date(attempt.endedAt) : new Date();
+      const durationSeconds = Math.max(0, Math.round((fallbackReturnAt.getTime() - activeExitAt.getTime()) / 1000));
+      fullscreenSessions.push({
+        exitedAt: activeExitAt,
+        returnedAt: null,
+        durationSeconds,
+      });
+    }
+
+    const totalOutsideFullscreenSeconds = fullscreenSessions.reduce((acc, s) => acc + s.durationSeconds, 0);
 
     const answers = attempt.answers || [];
     const questionIdSet = new Set<string>();
@@ -758,6 +802,17 @@ export const getStudentReport = async (req: Request, res: Response) => {
         timestamp: l.timestamp,
         imageId: l.imageId,
       })),
+      fullscreenSummary: {
+        exitCount: fullscreenSessions.length,
+        totalOutsideSeconds: totalOutsideFullscreenSeconds,
+        sessions: fullscreenSessions.map((session, index) => ({
+          index: index + 1,
+          exitedAt: session.exitedAt,
+          returnedAt: session.returnedAt,
+          durationSeconds: session.durationSeconds,
+          durationMinutes: Number((session.durationSeconds / 60).toFixed(2)),
+        })),
+      },
     });
   } catch (error) {
     console.error('Get student report error:', error);

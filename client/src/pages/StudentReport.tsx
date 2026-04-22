@@ -16,6 +16,7 @@ const StudentReport = () => {
   const [student, setStudent] = useState<any | null>(null);
   const [attempt, setAttempt] = useState<any | null>(null);
   const [logs, setLogs] = useState<Array<any>>([]);
+  const [fullscreenSummary, setFullscreenSummary] = useState<any | null>(null);
 
   useEffect(() => {
     const load = async () => {
@@ -28,6 +29,7 @@ const StudentReport = () => {
         setStudent(data.student);
         setAttempt(data.attempt);
         setLogs(data.logs || []);
+        setFullscreenSummary(data.fullscreenSummary || null);
         setError(null);
       } catch (err: any) {
         console.error('Load report error:', err);
@@ -48,6 +50,12 @@ const StudentReport = () => {
       case 'medium': return 'default';
       default: return 'secondary';
     }
+  };
+
+  const formatDuration = (seconds: number) => {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins}m ${secs}s`;
   };
 
   return (
@@ -106,6 +114,53 @@ const StudentReport = () => {
           </CardContent>
         </Card>
 
+        {fullscreenSummary && (
+          <Card className="mb-6">
+            <CardHeader>
+              <CardTitle>Fullscreen Activity</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="grid md:grid-cols-2 gap-4 mb-4">
+                <div className="p-4 bg-muted rounded-lg">
+                  <p className="text-sm text-muted-foreground">Fullscreen Exits</p>
+                  <p className="text-2xl font-bold mt-1">{fullscreenSummary.exitCount ?? 0}</p>
+                </div>
+                <div className="p-4 bg-muted rounded-lg">
+                  <p className="text-sm text-muted-foreground">Total Time Outside Fullscreen</p>
+                  <p className="text-2xl font-bold mt-1">
+                    {formatDuration(fullscreenSummary.totalOutsideSeconds ?? 0)}
+                  </p>
+                </div>
+              </div>
+
+              {(fullscreenSummary.sessions || []).length > 0 ? (
+                <div className="space-y-3">
+                  {(fullscreenSummary.sessions || []).map((session: any) => (
+                    <div key={session.index} className="rounded-lg border bg-background p-3">
+                      <div className="flex flex-wrap items-center justify-between gap-3">
+                        <div>
+                          <p className="font-semibold">Exit #{session.index}</p>
+                          <p className="text-sm text-muted-foreground">
+                            Left: {session.exitedAt ? new Date(session.exitedAt).toLocaleString() : 'N/A'}
+                          </p>
+                          <p className="text-sm text-muted-foreground">
+                            Returned: {session.returnedAt ? new Date(session.returnedAt).toLocaleString() : 'Not returned before test end'}
+                          </p>
+                        </div>
+                        <Badge variant="secondary">
+                          {formatDuration(session.durationSeconds ?? 0)} ({session.durationMinutes ?? 0} mins)
+                        </Badge>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="text-sm text-muted-foreground">No fullscreen exits were recorded for this attempt.</div>
+              )}
+            </CardContent>
+          </Card>
+        )}
+
         {attempt?.questionResults?.length > 0 && (
           <Card className="mb-6">
             <CardHeader>
@@ -140,7 +195,7 @@ const StudentReport = () => {
                         <p className="font-semibold">{qr.questionText}</p>
                       </div>
                       <div className="flex items-center gap-3">
-                        <Badge variant={qr.status === 'correct' ? 'success' : qr.status === 'incorrect' ? 'destructive' : 'secondary'}>
+                        <Badge variant={qr.status === 'correct' ? 'default' : qr.status === 'incorrect' ? 'destructive' : 'secondary'}>
                           {qr.status === 'correct' ? 'Correct' : qr.status === 'incorrect' ? 'Incorrect' : 'Needs Review'}
                         </Badge>
                         <div className="text-right">
