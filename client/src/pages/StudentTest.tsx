@@ -33,12 +33,18 @@ type DisplayCheckResult = 'multiple' | 'single' | 'unsupported' | 'permission_de
 // Best-effort monitor detection for logging only (never blocks student UI).
 const detectDisplayRisk = async (): Promise<DisplayCheckResult> => {
   const win = window as any;
+  const screenObj = window.screen as Screen & { isExtended?: boolean };
   const timeoutMs = 1500;
   const timeoutPromise = new Promise<DisplayCheckResult>((resolve) =>
     setTimeout(() => resolve('timeout'), timeoutMs)
   );
 
   try {
+    // Chromium exposes this in some environments when extended displays are active.
+    if (typeof screenObj?.isExtended === 'boolean') {
+      return screenObj.isExtended ? 'multiple' : 'single';
+    }
+
     if (typeof win.getScreenDetails === 'function') {
       const result = await Promise.race([
         (async () => {
@@ -55,6 +61,7 @@ const detectDisplayRisk = async (): Promise<DisplayCheckResult> => {
       return result as DisplayCheckResult;
     }
 
+    // Legacy/experimental surface in some browser builds.
     if (typeof win.getScreens === 'function') {
       const result = await Promise.race([
         (async () => {
@@ -118,6 +125,7 @@ const StudentTest = () => {
   const [fullscreenWarnings, setFullscreenWarnings] = useState(0);
   const [showFullscreenWarning, setShowFullscreenWarning] = useState(false);
   const [isTimerHydrated, setIsTimerHydrated] = useState(false);
+  const isTimerHydratedRef = useRef(false);
   const autoSubmitTriggeredRef = useRef(false);
   const questionEnteredAtRef = useRef<number>(Date.now());
   const activityQueueRef = useRef<any[]>([]);
@@ -185,6 +193,7 @@ const StudentTest = () => {
 
       try {
         setIsTimerHydrated(false);
+        isTimerHydratedRef.current = false;
         autoSubmitTriggeredRef.current = false;
         const response = await authFetch(getApiUrl(`/api/student/test/${testId}`));
 
@@ -220,6 +229,7 @@ const StudentTest = () => {
           setAnswers({});
         }
         setIsTimerHydrated(true);
+        isTimerHydratedRef.current = true;
         questionEnteredAtRef.current = Date.now();
 
         setTest({
@@ -576,6 +586,7 @@ const StudentTest = () => {
 
   // Save progress to server
   const saveProgress = async () => {
+    if (!isTimerHydratedRef.current) return;
     try {
       const testId = localStorage.getItem('testId');
       const studentId = localStorage.getItem('studentId');
@@ -598,18 +609,7 @@ const StudentTest = () => {
     }
   };
 
-  // Save progress on unmount or when answers change
-  useEffect(() => {
-    return () => {
-      // Save progress when component unmounts
-      saveProgress();
-    };
-  }, []);
-
-  useEffect(() => {
-    // Save progress when answers change (immediately)
-    saveProgress();
-  }, [answers, currentQuestion, timeLeft]);
+  // Duplicate useEffects removed here
 
   // Show logout warning
   useEffect(() => {
@@ -683,11 +683,16 @@ const StudentTest = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [timeLeft, test, isTimerHydrated]);
 
+  const saveProgressRef = useRef(saveProgress);
+  useEffect(() => {
+    saveProgressRef.current = saveProgress;
+  });
+
   // Save progress on unmount
   useEffect(() => {
     return () => {
       // Save progress when component unmounts
-      saveProgress();
+      saveProgressRef.current();
     };
   }, []);
 

@@ -121,14 +121,14 @@ const Index = () => {
               <ShieldCheck className="w-8 h-8 text-success" />
             </div>
             <h3 className="font-semibold mb-2">AI Proctoring</h3>
-            <p className="text-sm text-muted-foreground">Real-time monitoring with advanced object and face detection</p>
+            <p className="text-sm text-muted-foreground">Monitoring with advanced object and face detection</p>
           </div>
           <div className="text-center p-6">
             <div className="bg-primary/10 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4">
               <GraduationCap className="w-8 h-8 text-primary" />
             </div>
             <h3 className="font-semibold mb-2">Secure Testing</h3>
-            <p className="text-sm text-muted-foreground">Browser lockdown and comprehensive integrity checks</p>
+            <p className="text-sm text-muted-foreground">Comprehensive integrity checks</p>
           </div>
           <div className="text-center p-6">
             <div className="bg-secondary/10 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4">
