@@ -12,7 +12,10 @@ const Index = () => {
   useEffect(() => {
     const loadModels = async () => {
       try {
-        await fetch(getApiUrl('/api/load-models'));
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 4000);
+        await fetch(getApiUrl('/api/load-models'), { signal: controller.signal });
+        clearTimeout(timeoutId);
         console.log('✓ Face recognition models loading initiated');
       } catch (error) {
         console.warn('⚠ Could not trigger model loading:', error);

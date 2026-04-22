@@ -26,13 +26,11 @@ const StudentTestList = () => {
 
   useEffect(() => {
     const fetchTests = async () => {
-      const studentId = localStorage.getItem('studentId');
-      const studentEmail = localStorage.getItem('studentEmail');
-
-      if (!studentId && !studentEmail) {
+      const token = localStorage.getItem('token');
+      if (!token) {
         toast({
           title: "Error",
-          description: "Student details not found. Please login again.",
+          description: "Session expired. Please login again.",
           variant: "destructive",
         });
         navigate('/student/login');
@@ -40,15 +38,7 @@ const StudentTestList = () => {
       }
 
       try {
-        const queryParams = new URLSearchParams();
-        if (studentId) {
-          queryParams.append('studentId', studentId);
-        }
-        if (studentEmail) {
-          queryParams.append('email', studentEmail);
-        }
-
-        const response = await authFetch(getApiUrl(`/api/student/tests?${queryParams.toString()}`));
+        const response = await authFetch(getApiUrl('/api/student/tests'));
 
         if (response.ok) {
           const data = await response.json();

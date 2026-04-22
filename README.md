@@ -116,6 +116,7 @@ NODE_ENV=development
 CORS_ORIGIN=http://localhost:5173
 MONGODB_URI=mongodb://localhost:27017/pariksha_ai
 OPENAI_API_KEY=
+GENAI_API_KEY=
 ANTHROPIC_API_KEY=
 JWT_SECRET=
 JWT_EXPIRES_IN=

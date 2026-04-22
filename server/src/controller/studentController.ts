@@ -21,6 +21,12 @@ export const getEnrolledTests = async (req: Request, res: Response) => {
 
     let { studentId, email } = req.query as { studentId?: string; email?: string };
 
+    // Prefer authenticated user identity to avoid stale client localStorage values.
+    if (!studentId) {
+      const user = (req as any).user;
+      if (user?.id) studentId = user.id;
+    }
+
     if (!studentId && !email) {
       return res.status(400).json({
         message: 'Student ID or email is required',
@@ -107,10 +113,10 @@ export const getTestById = async (req: Request, res: Response) => {
     const { testId } = req.params;
     let { studentId, email } = req.query as { studentId?: string; email?: string };
 
-    // If no studentId provided, use authenticated user (JWT)
-    if (!studentId) {
-      const user = (req as any).user;
-      if (user && user.id) studentId = user.id;
+    // Always prefer authenticated user identity to avoid stale/spoofed query params.
+    const user = (req as any).user;
+    if (user?.id) {
+      studentId = user.id;
     }
 
     if (!studentId && !email) {
@@ -726,5 +732,75 @@ export const recordLogout = async (req: Request, res: Response) => {
   } catch (error: any) {
     console.error('Record logout error:', error);
     res.status(500).json({ message: 'Failed to record logout', error: error?.message });
+  }
+};
+
+export const reportMonitorRisk = async (req: Request, res: Response) => {
+  try {
+    if (mongoose.connection.readyState !== 1) {
+      return res.status(503).json({ message: 'Database connection not available', error: 'DATABASE_UNAVAILABLE' });
+    }
+
+    let { studentId, testId, reason } = req.body as {
+      studentId?: string;
+      testId?: string;
+      reason?: 'multiple_detected' | 'permission_denied';
+    };
+
+    if (!studentId) {
+      const user = (req as any).user;
+      if (user?.id) studentId = user.id;
+    }
+
+    if (!studentId || !testId || !reason) {
+      return res.status(400).json({ message: 'Missing required fields: studentId, testId, reason', error: 'MISSING_FIELDS' });
+    }
+
+    let attempt = await ExamAttempt.findOne({ testId, studentId });
+    if (!attempt) {
+      attempt = new ExamAttempt({
+        testId,
+        studentId,
+        status: 'in-progress',
+        startedAt: new Date(),
+        totalScore: 0,
+        trustScore: 100,
+        totalViolations: 0,
+        questionsAttempted: 0,
+        answers: [],
+      });
+      await attempt.save();
+    }
+
+    // Deduplicate frequent identical logs from periodic polling.
+    const dedupeWindowMs = 2 * 60 * 1000;
+    const recent = await ProctoringLog.findOne({
+      attemptId: attempt._id,
+      label: 'Multiple Monitors',
+      timestamp: { $gte: new Date(Date.now() - dedupeWindowMs) },
+    }).sort({ timestamp: -1 });
+
+    if (recent) {
+      return res.status(200).json({ message: 'Monitor risk already logged recently', deduped: true });
+    }
+
+    const severity: 'medium' | 'high' = reason === 'multiple_detected' ? 'high' : 'medium';
+    await ProctoringLog.create({
+      attemptId: attempt._id,
+      timestamp: new Date(),
+      label: 'Multiple Monitors',
+      severity,
+    });
+
+    const penalty = severity === 'high' ? 10 : 5;
+    attempt.totalViolations += 1;
+    attempt.trustScore = Math.max(0, (attempt.trustScore || 100) - penalty);
+    await attempt.save();
+
+    res.status(200).json({ message: 'Monitor risk logged', severity });
+  } catch (error: any) {
+    console.error('Report monitor risk error:', error);
+    // Keep this endpoint non-blocking for exam flow.
+    res.status(200).json({ message: 'Monitor risk received (processing error logged)' });
   }
 };

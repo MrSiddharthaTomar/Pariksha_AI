@@ -28,45 +28,51 @@ const blobToBase64 = (blob: Blob): Promise<string> => {
   });
 };
 
-// Best-effort multiple-display detection using Screen Enumeration API when available.
-// Best-effort multiple-display detection using Screen Enumeration API when available.
-// Returns: 'multiple' | 'single' | 'unsupported' | 'permission_denied'
-const detectMultipleDisplays = async (): Promise<'multiple' | 'single' | 'unsupported' | 'permission_denied'> => {
+type DisplayCheckResult = 'multiple' | 'single' | 'unsupported' | 'permission_denied' | 'timeout';
+
+// Best-effort monitor detection for logging only (never blocks student UI).
+const detectDisplayRisk = async (): Promise<DisplayCheckResult> => {
+  const win = window as any;
+  const timeoutMs = 1500;
+  const timeoutPromise = new Promise<DisplayCheckResult>((resolve) =>
+    setTimeout(() => resolve('timeout'), timeoutMs)
+  );
+
   try {
-    const anyWin: any = window as any;
-    // Most modern Chromium exposes getScreenDetails
-    if (typeof anyWin.getScreenDetails === 'function') {
-      try {
-        const details = await anyWin.getScreenDetails();
-        const screens = details?.screens || [];
-        if (Array.isArray(screens) && screens.length > 1) return 'multiple';
-        return 'single';
-      } catch (err) {
-        // If the API exists but fails, it's widely due to user denying permission
-        return 'permission_denied';
-      }
+    if (typeof win.getScreenDetails === 'function') {
+      const result = await Promise.race([
+        (async () => {
+          try {
+            const details = await win.getScreenDetails();
+            const screens = details?.screens || [];
+            return Array.isArray(screens) && screens.length > 1 ? 'multiple' : 'single';
+          } catch {
+            return 'permission_denied';
+          }
+        })(),
+        timeoutPromise,
+      ]);
+      return result as DisplayCheckResult;
     }
 
-    // Some browsers may expose window.getScreens (experimental) — try it
-    if (typeof anyWin.getScreens === 'function') {
-      try {
-        const details = await anyWin.getScreens();
-        const screens = details?.screens || details || [];
-        if (Array.isArray(screens) && screens.length > 1) return 'multiple';
-        return 'single';
-      } catch (err) {
-        // Treat as unsupported or permission denied? 
-        // For experimental API, we might be safer treating as unsupported to avoid false positives,
-        // but consistent strictness suggests permission_denied if we want to be robust. 
-        // Let's stick effectively to unsupported for the experimental one unless we are sure.
-        // Actually, let's treat it as permission_denied if it fails too, to be consistent.
-        return 'permission_denied';
-      }
+    if (typeof win.getScreens === 'function') {
+      const result = await Promise.race([
+        (async () => {
+          try {
+            const details = await win.getScreens();
+            const screens = details?.screens || details || [];
+            return Array.isArray(screens) && screens.length > 1 ? 'multiple' : 'single';
+          } catch {
+            return 'permission_denied';
+          }
+        })(),
+        timeoutPromise,
+      ]);
+      return result as DisplayCheckResult;
     }
 
-    // Not supported
     return 'unsupported';
-  } catch (err) {
+  } catch {
     return 'unsupported';
   }
 };
@@ -117,9 +123,8 @@ const StudentTest = () => {
   const startTimeRef = useRef<Date | null>(null);
   const violationsRef = useRef<Array<{ timestamp: Date; type: string; severity: 'low' | 'medium' | 'high' }>>([]);
   const chunkIntervalRef = useRef<NodeJS.Timeout | null>(null);
-  const displayCheckIntervalRef = useRef<NodeJS.Timeout | null>(null);
-  const [blockedByMultiDisplay, setBlockedByMultiDisplay] = useState(false);
-  const [multiDisplayMessage, setMultiDisplayMessage] = useState<string | null>(null);
+  const monitorRiskIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const lastMonitorRiskReportRef = useRef<{ reason: string; at: number } | null>(null);
   const [showLogoutWarning, setShowLogoutWarning] = useState(false);
 
   const questions = test?.questions || [];
@@ -129,9 +134,8 @@ const StudentTest = () => {
     const fetchTest = async () => {
       const testId = localStorage.getItem('testId');
       const studentId = localStorage.getItem('studentId');
-      const studentEmail = localStorage.getItem('studentEmail');
 
-      if (!testId || (!studentId && !studentEmail)) {
+      if (!testId) {
         toast({
           title: "Missing Test",
           description: "Test information not found. Please select a test again.",
@@ -141,12 +145,20 @@ const StudentTest = () => {
         return;
       }
 
-      try {
-        const queryParams = new URLSearchParams();
-        if (studentId) queryParams.append('studentId', studentId);
-        if (studentEmail) queryParams.append('email', studentEmail);
+      // Enforce SEB context
+      const isSEB = navigator.userAgent.includes('SEB') || navigator.userAgent.includes('SafeExamBrowser');
+      if (!isSEB) {
+        toast({
+          title: "SEB Required",
+          description: "You must use Safe Exam Browser to take this test. Please launch it from the exam rules page.",
+          variant: "destructive",
+        });
+        navigate('/student/tests');
+        return;
+      }
 
-        const response = await authFetch(getApiUrl(`/api/student/test/${testId}?${queryParams.toString()}`));
+      try {
+        const response = await authFetch(getApiUrl(`/api/student/test/${testId}`));
 
         if (!response.ok) {
           const error = await response.json();
@@ -184,36 +196,7 @@ const StudentTest = () => {
           setAnswers({});
         }
 
-        // Before starting, attempt to detect multiple displays (best-effort). If multiple displays are detected, block attempt
-        const detectResult = await detectMultipleDisplays();
-        if (detectResult === 'multiple') {
-          // Log to server and block
-          try {
-            await authFetch(getApiUrl('/api/student/multi-monitor-detected'), {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ studentId: studentId || undefined, testId }),
-            });
-          } catch (err) {
-            console.warn('Failed to record multi-display event:', err);
-          }
 
-          setBlockedByMultiDisplay(true);
-          setMultiDisplayMessage('Multiple displays detected. Your exam has been blocked. Please disconnect external monitors and contact your examiner.');
-          setIsLoadingTest(false);
-          return;
-        } else if (detectResult === 'permission_denied') {
-          setBlockedByMultiDisplay(true);
-          setMultiDisplayMessage('Permission Denied: To ensure a secure exam environment, you must allow "Window Management" or "screen details" permission. Please enable this permission in your browser settings (look for a lock/icon in the address bar) and refresh the page.');
-          setIsLoadingTest(false);
-          return;
-        } else if (detectResult === 'unsupported') {
-          toast({
-            title: 'Display Detection Unavailable',
-            description: 'Your browser does not support automatic multiple-display detection. Please ensure you are using a single display during the exam.',
-            variant: 'default',
-          });
-        }
 
         // Mark student's attempt as started (so examiner's monitor sees in-progress attempts)
         (async () => {
@@ -387,52 +370,10 @@ const StudentTest = () => {
           }
         }, 6000); // Check every 6 seconds
 
-        // Periodically check for multiple displays (best-effort). If detected, block the exam immediately.
-        displayCheckIntervalRef.current = setInterval(async () => {
-          try {
-            const result = await detectMultipleDisplays();
-            if (result === 'multiple' || result === 'permission_denied') {
-              // Inform server and block locally
-              const studentId = localStorage.getItem('studentId');
-              const testId = localStorage.getItem('testId') || (test?.id);
 
-              const isPermissionError = result === 'permission_denied';
-
-              try {
-                // We only log to server if it's a confirmed multiple display detection, 
-                // or optionally we could log permission denial too. For now let's reuse api but maybe with different flag?
-                // The API call below is generic 'multi-monitor-detected', we might want to distinguish later but for now this is fine or we skip logging denied permission to avoid noise if user just misclicked.
-                // Let's Log it anyway so proctor knows why they got blocked.
-                await authFetch(getApiUrl('/api/student/multi-monitor-detected'), {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ studentId: studentId || undefined, testId, reason: result }),
-                });
-              } catch (err) {
-                console.warn('Failed to report blocking event:', err);
-              }
-
-              setBlockedByMultiDisplay(true);
-              setMultiDisplayMessage(isPermissionError
-                ? 'Permission Revoked: You must allow "Window Management" permission to continue. Please check your browser settings.'
-                : 'Multiple displays detected during the exam. Your attempt has been blocked.');
-
-              // Stop recording and timers
-              if (chunkIntervalRef.current) clearInterval(chunkIntervalRef.current);
-              if (videoRecorderRef.current && videoRecorderRef.current.state !== 'inactive') videoRecorderRef.current.stop();
-              if (audioRecorderRef.current && audioRecorderRef.current.state !== 'inactive') audioRecorderRef.current.stop();
-
-              // Stop display check interval
-              if (displayCheckIntervalRef.current) clearInterval(displayCheckIntervalRef.current);
-            }
-          } catch (err) {
-            // ignore detection errors silently
-          }
-        }, 15000); // every 15s
 
         return () => {
           clearInterval(violationInterval);
-          if (displayCheckIntervalRef.current) clearInterval(displayCheckIntervalRef.current);
         };
       } catch (error) {
         console.error('Error accessing media devices:', error);
@@ -452,9 +393,7 @@ const StudentTest = () => {
       if (chunkIntervalRef.current) {
         clearInterval(chunkIntervalRef.current);
       }
-      if (displayCheckIntervalRef.current) {
-        clearInterval(displayCheckIntervalRef.current);
-      }
+
       if (combinedStreamRef.current) {
         combinedStreamRef.current.getTracks().forEach(track => track.stop());
       }
@@ -466,6 +405,52 @@ const StudentTest = () => {
       }
     };
   }, []); // Only run once on mount
+
+  // Non-blocking monitor risk logging for examiner visibility
+  useEffect(() => {
+    if (!test) return;
+
+    const reportMonitorRisk = async (reason: 'multiple_detected' | 'permission_denied') => {
+      const now = Date.now();
+      const last = lastMonitorRiskReportRef.current;
+      if (last && last.reason === reason && now - last.at < 120000) {
+        return; // avoid spamming same reason repeatedly
+      }
+
+      try {
+        const studentId = localStorage.getItem('studentId');
+        const testId = localStorage.getItem('testId') || test.id;
+        if (!studentId || !testId) return;
+
+        await authFetch(getApiUrl('/api/student/monitor-risk'), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ studentId, testId, reason }),
+        });
+        lastMonitorRiskReportRef.current = { reason, at: now };
+      } catch (error) {
+        console.warn('Failed to report monitor risk:', error);
+      }
+    };
+
+    const checkAndReport = async () => {
+      const result = await detectDisplayRisk();
+      if (result === 'multiple') {
+        await reportMonitorRisk('multiple_detected');
+      } else if (result === 'permission_denied') {
+        await reportMonitorRisk('permission_denied');
+      }
+    };
+
+    checkAndReport();
+    monitorRiskIntervalRef.current = setInterval(checkAndReport, 60000);
+
+    return () => {
+      if (monitorRiskIntervalRef.current) {
+        clearInterval(monitorRiskIntervalRef.current);
+      }
+    };
+  }, [test]);
 
   // Handle logout/session end recording
   useEffect(() => {
@@ -711,25 +696,7 @@ const StudentTest = () => {
     );
   }
 
-  // If blocked due to multiple displays being detected, show a blocking overlay
-  if (blockedByMultiDisplay) {
-    return (
-      <div className="min-h-screen bg-gradient-hero flex items-center justify-center p-4">
-        <Card className="max-w-xl w-full text-center">
-          <CardHeader>
-            <CardTitle className="text-xl">Exam Blocked</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <p className="text-muted-foreground">{multiDisplayMessage || 'Multiple displays detected. Your exam has been blocked.'}</p>
-            <p className="text-sm">Please disconnect any external monitors and contact your examiner to continue.</p>
-            <div className="flex justify-center gap-2 mt-4">
-              <Button onClick={() => navigate('/student/tests')}>Return to Tests</Button>
-            </div>
-          </CardContent>
-        </Card>
-      </div>
-    );
-  }
+
 
   if (!test || questions.length === 0) {
     return (
