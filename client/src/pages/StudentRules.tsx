@@ -25,21 +25,7 @@ const StudentRules = () => {
 
   const handleStartTest = () => {
     if (agreedToRules) {
-      const isSEB = navigator.userAgent.includes('SEB') || navigator.userAgent.includes('SafeExamBrowser');
-      
-      if (!isSEB) {
-        // Enforce Safe Exam Browser
-        const host = window.location.host;
-        const isHttps = window.location.protocol === 'https:';
-        const protocol = isHttps ? 'sebs://' : 'seb://';
-        
-        // Launch SEB to the test page (SEB will handle re-auth if needed)
-        const sebUrl = `${protocol}${host}/student/test`;
-        window.location.href = sebUrl;
-      } else {
-        // Already in SEB, proceed to test
-        navigate('/student/test');
-      }
+      navigate('/student/test');
     }
   };
 

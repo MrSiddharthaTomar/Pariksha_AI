@@ -1,13 +1,29 @@
 import { Request, Response } from 'express';
 import mongoose from 'mongoose';
+import crypto from 'crypto';
 import User from '../models/User';
 import Test from '../models/Test';
 import ProctoringLog from '../models/ProctoringLog';
 import Question from '../models/Question';
 import ExamAttempt from '../models/ExamAttempt';
+import AttemptEventLog from '../models/AttemptEventLog';
 import TestRecording from '../models/TestRecording';
 import { processVideoChunkWithML, extractFrameFromVideo } from '../utils/mlProctoring';
 import { getCheatingImagesBucket } from '../utils/gridfs';
+
+const shuffleWithSeed = <T>(items: T[], seed: string): T[] => {
+  const arr = [...items];
+  let state = seed.split('').reduce((acc, c) => acc + c.charCodeAt(0), 0) || 1;
+  const next = () => {
+    state = (state * 1664525 + 1013904223) % 4294967296;
+    return state / 4294967296;
+  };
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(next() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr;
+};
 
 export const getEnrolledTests = async (req: Request, res: Response) => {
   try {
@@ -171,8 +187,9 @@ export const getTestById = async (req: Request, res: Response) => {
     }
 
     let existingProgress = null;
+    let attemptForResponse: any = null;
     if (studentId) {
-      const existingAttempt = await ExamAttempt.findOne({
+      let existingAttempt = await ExamAttempt.findOne({
         testId,
         studentId,
       });
@@ -184,8 +201,24 @@ export const getTestById = async (req: Request, res: Response) => {
         });
       }
 
+      if (!existingAttempt) {
+        existingAttempt = await ExamAttempt.create({
+          testId,
+          studentId,
+          status: 'in-progress',
+          startedAt: new Date(),
+          totalScore: 0,
+          trustScore: 100,
+          totalViolations: 0,
+          questionsAttempted: 0,
+          answers: [],
+        });
+      }
+
+      attemptForResponse = existingAttempt;
+
       // If there's an in-progress attempt, include the progress data
-      if (existingAttempt && existingAttempt.status === 'in-progress') {
+      if (existingAttempt.status === 'in-progress') {
         let timeRemaining = existingAttempt.timeRemaining;
         let showLogoutWarning = false;
 
@@ -230,16 +263,52 @@ export const getTestById = async (req: Request, res: Response) => {
       questionDocs.map((doc) => [(doc._id as any).toString(), doc])
     );
 
-    const orderedQuestions = questionIds
+    // Build stable per-attempt randomization (question order + MCQ option order)
+    const baseQuestionIdStrings = questionIds.map((id: any) => (id as any).toString());
+    let randomizedQuestionIds = [...baseQuestionIdStrings];
+    let optionOrderByQuestion: Record<string, number[]> = {};
+
+    if (attemptForResponse) {
+      if (!Array.isArray(attemptForResponse.questionOrder) || attemptForResponse.questionOrder.length !== baseQuestionIdStrings.length) {
+        const seed = ((attemptForResponse._id as any).toString() || crypto.randomUUID()) + ':questions';
+        randomizedQuestionIds = shuffleWithSeed(baseQuestionIdStrings, seed);
+        attemptForResponse.questionOrder = randomizedQuestionIds;
+      } else {
+        randomizedQuestionIds = attemptForResponse.questionOrder;
+      }
+
+      optionOrderByQuestion = attemptForResponse.optionOrderByQuestion || {};
+      for (const qId of randomizedQuestionIds) {
+        const qDoc: any = questionMap.get(qId);
+        if (!qDoc || qDoc.type !== 'mcq') continue;
+        const optionCount = Array.isArray(qDoc.options) ? qDoc.options.length : 0;
+        if (optionCount < 2) continue;
+        const existingOrder = optionOrderByQuestion[qId];
+        if (!Array.isArray(existingOrder) || existingOrder.length !== optionCount) {
+          const originalIndices = Array.from({ length: optionCount }, (_, i) => i);
+          optionOrderByQuestion[qId] = shuffleWithSeed(originalIndices, `${(attemptForResponse._id as any).toString()}:${qId}`);
+        }
+      }
+      attemptForResponse.optionOrderByQuestion = optionOrderByQuestion;
+      await attemptForResponse.save();
+    }
+
+    const orderedQuestions = randomizedQuestionIds
       .map((id, index) => {
         const doc = questionMap.get((id as any).toString());
         if (!doc) return null;
+        const qId = (doc._id as any).toString();
+        const randomizedOptionOrder = optionOrderByQuestion[qId];
+        let options = doc.type === 'mcq' ? (doc.options || []) : [];
+        if (doc.type === 'mcq' && Array.isArray(randomizedOptionOrder) && randomizedOptionOrder.length === options.length) {
+          options = randomizedOptionOrder.map((originalIdx) => options[originalIdx]);
+        }
         return {
           id: index + 1,
-          questionId: (doc._id as any).toString(),
+          questionId: qId,
           type: doc.type,
           question: doc.questionText,
-          options: doc.type === 'mcq' ? doc.options : [],
+          options,
           marks: doc.marks || 1,
           sampleInput: doc.sampleInput,
           sampleOutput: doc.sampleOutput,
@@ -265,6 +334,7 @@ export const getTestById = async (req: Request, res: Response) => {
       status: test.status,
       startTime: test.startTime,
       endTime: test.endTime,
+      attemptId: attemptForResponse ? (attemptForResponse._id as any).toString() : undefined,
       questions: orderedQuestions,
       ...(existingProgress && { progress: existingProgress }),
     });
@@ -301,7 +371,7 @@ export const processProctorChunk = async (req: Request, res: Response) => {
     let { studentId, testId, videoChunk, timestamp } = req.body as any;
 
     // If studentId not provided, pull from authenticated user (JWT)
-    if (!studentId) {
+    if (!studentId || studentId === 'unknown') {
       const user = (req as any).user;
       if (user && user.id) studentId = user.id;
     }
@@ -454,7 +524,7 @@ export const startAttempt = async (req: Request, res: Response) => {
 
     let { studentId, testId } = req.body as any;
     // If studentId not supplied, get it from JWT
-    if (!studentId) {
+    if (!studentId || studentId === 'unknown') {
       const user = (req as any).user;
       if (user && user.id) studentId = user.id;
     }
@@ -515,7 +585,12 @@ export const submitTest = async (req: Request, res: Response) => {
       return res.status(503).json({ message: 'Database connection not available', error: 'DATABASE_UNAVAILABLE' });
     }
 
-    const { studentId, testId, answers, startTime, endTime, violations } = req.body;
+    let { studentId, testId, answers, startTime, endTime, violations } = req.body;
+
+    if (!studentId || studentId === 'unknown') {
+      const user = (req as any).user;
+      if (user && user.id) studentId = user.id;
+    }
 
     if (!studentId || !testId || !answers) {
       return res.status(400).json({ message: 'Missing required submission fields', error: 'MISSING_FIELDS' });
@@ -569,9 +644,13 @@ export const submitTest = async (req: Request, res: Response) => {
       let marksObtained = 0;
 
       if (question.type === 'mcq') {
-        // Compare with correct answer (index)
-        // Assuming question.correctAnswer is the index number
-        if (Number(submittedAns) === Number(question.correctAnswer)) {
+        const optionOrder = (attempt.optionOrderByQuestion || {})[qId];
+        let normalizedSubmitted = Number(submittedAns);
+        // Convert randomized option index back to original option index before grading
+        if (Array.isArray(optionOrder) && optionOrder.length > normalizedSubmitted && normalizedSubmitted >= 0) {
+          normalizedSubmitted = Number(optionOrder[normalizedSubmitted]);
+        }
+        if (normalizedSubmitted === Number(question.correctAnswer)) {
           isCorrect = true;
           marksObtained = question.marks || 1;
         }
@@ -646,7 +725,12 @@ export const saveProgress = async (req: Request, res: Response) => {
       return res.status(503).json({ message: 'Database connection not available', error: 'DATABASE_UNAVAILABLE' });
     }
 
-    const { studentId, testId, currentQuestionIndex, timeRemaining, answers } = req.body;
+    let { studentId, testId, currentQuestionIndex, timeRemaining, answers } = req.body;
+
+    if (!studentId || studentId === 'unknown') {
+      const user = (req as any).user;
+      if (user && user.id) studentId = user.id;
+    }
 
     if (!studentId || !testId) {
       return res.status(400).json({ message: 'Missing required fields: studentId, testId', error: 'MISSING_FIELDS' });
@@ -705,7 +789,7 @@ export const recordLogout = async (req: Request, res: Response) => {
     let { studentId, testId } = req.body;
 
     // If studentId not supplied, get it from JWT
-    if (!studentId) {
+    if (!studentId || studentId === 'unknown') {
       const user = (req as any).user;
       if (user && user.id) studentId = user.id;
     }
@@ -747,7 +831,7 @@ export const reportMonitorRisk = async (req: Request, res: Response) => {
       reason?: 'multiple_detected' | 'permission_denied';
     };
 
-    if (!studentId) {
+    if (!studentId || studentId === 'unknown') {
       const user = (req as any).user;
       if (user?.id) studentId = user.id;
     }
@@ -802,5 +886,72 @@ export const reportMonitorRisk = async (req: Request, res: Response) => {
     console.error('Report monitor risk error:', error);
     // Keep this endpoint non-blocking for exam flow.
     res.status(200).json({ message: 'Monitor risk received (processing error logged)' });
+  }
+};
+
+export const logActivityEvents = async (req: Request, res: Response) => {
+  try {
+    if (mongoose.connection.readyState !== 1) {
+      return res.status(503).json({ message: 'Database connection not available', error: 'DATABASE_UNAVAILABLE' });
+    }
+
+    let { studentId, testId, attemptId, events } = req.body as {
+      studentId?: string;
+      testId?: string;
+      attemptId?: string;
+      events?: Array<{
+        eventType: 'tab_hidden' | 'tab_visible' | 'window_blur' | 'window_focus' | 'fullscreen_enter' | 'fullscreen_exit' | 'question_time_spent' | 'warning_shown';
+        timestamp?: string;
+        questionId?: string;
+        questionIndex?: number;
+        durationMs?: number;
+        meta?: Record<string, any>;
+      }>;
+    };
+
+    if (!studentId || studentId === 'unknown') {
+      const user = (req as any).user;
+      if (user?.id) studentId = user.id;
+    }
+
+    if (!studentId || !testId || !Array.isArray(events) || events.length === 0) {
+      return res.status(400).json({ message: 'Missing required fields: studentId, testId, events[]', error: 'MISSING_FIELDS' });
+    }
+
+    let attempt = attemptId ? await ExamAttempt.findById(attemptId) : null;
+    if (!attempt) {
+      attempt = await ExamAttempt.findOne({ studentId, testId });
+    }
+    if (!attempt) {
+      attempt = await ExamAttempt.create({
+        testId,
+        studentId,
+        status: 'in-progress',
+        startedAt: new Date(),
+        totalScore: 0,
+        trustScore: 100,
+        totalViolations: 0,
+        questionsAttempted: 0,
+        answers: [],
+      });
+    }
+
+    const docs = events.slice(0, 200).map((evt) => ({
+      attemptId: attempt!._id,
+      studentId,
+      testId,
+      eventType: evt.eventType,
+      timestamp: evt.timestamp ? new Date(evt.timestamp) : new Date(),
+      questionId: evt.questionId,
+      questionIndex: evt.questionIndex,
+      durationMs: evt.durationMs,
+      meta: evt.meta || {},
+    }));
+
+    await AttemptEventLog.insertMany(docs, { ordered: false });
+    res.status(200).json({ message: 'Activity events logged', count: docs.length });
+  } catch (error: any) {
+    console.error('Log activity events error:', error);
+    res.status(200).json({ message: 'Activity events received (processing error logged)' });
   }
 };

@@ -3,7 +3,7 @@ import { registerUser } from '../controller/registerUser'
 import { userLogin } from "../controller/userLogin";
 import { authenticateJWT } from "../utils/jwt";
 import { examinerDashboard, createTest, getTestDetails, getStudents, getLiveTests, getMonitorEvents, reviewProctoringLog, getMonitorAttempts, getProctoringImage, updateTest, generateQuestionsAI, getTestResults, deleteTest, getStudentReport } from "../controller/examinerController";
-import { getEnrolledTests, getTestById, processProctorChunk, startAttempt, submitTest, saveProgress, recordLogout, reportMonitorRisk } from "../controller/studentController";
+import { getEnrolledTests, getTestById, processProctorChunk, startAttempt, submitTest, saveProgress, recordLogout, reportMonitorRisk, logActivityEvents } from "../controller/studentController";
 import { loadModels, aiGenerateTest } from "../controller/generalController";
 import { updateProfilePic } from "../controller/updateProfilePic";
 
@@ -66,5 +66,6 @@ router.post('/student/submit-test', submitTest);
 router.post('/student/save-progress', saveProgress);
 router.post('/student/record-logout', recordLogout);
 router.post('/student/monitor-risk', reportMonitorRisk);
+router.post('/student/activity-events', logActivityEvents);
 
 export default router;

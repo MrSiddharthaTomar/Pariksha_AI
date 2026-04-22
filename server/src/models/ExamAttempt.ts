@@ -31,6 +31,8 @@ export interface IExamAttempt extends Document {
   // latest frame data uri for live monitoring (optional)
   latestFrame?: string;
   latestFrameAt?: Date;
+  questionOrder?: string[];
+  optionOrderByQuestion?: Record<string, number[]>;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -118,6 +120,15 @@ const ExamAttemptSchema = new Schema<IExamAttempt>(
     },
     latestFrameAt: {
       type: Date,
+    },
+    // Stable per-attempt randomization maps
+    questionOrder: {
+      type: [String],
+      default: [],
+    },
+    optionOrderByQuestion: {
+      type: Schema.Types.Mixed,
+      default: {},
     },
   },
   {

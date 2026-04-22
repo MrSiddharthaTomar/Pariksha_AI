@@ -114,6 +114,13 @@ const StudentTest = () => {
   const [showLiveFeed, setShowLiveFeed] = useState(true);
   const [test, setTest] = useState<StudentTestData | null>(null);
   const [isLoadingTest, setIsLoadingTest] = useState(true);
+  const [attemptId, setAttemptId] = useState<string | null>(null);
+  const [fullscreenWarnings, setFullscreenWarnings] = useState(0);
+  const [showFullscreenWarning, setShowFullscreenWarning] = useState(false);
+  const [isTimerHydrated, setIsTimerHydrated] = useState(false);
+  const autoSubmitTriggeredRef = useRef(false);
+  const questionEnteredAtRef = useRef<number>(Date.now());
+  const activityQueueRef = useRef<any[]>([]);
 
   // Refs for recording
   const liveFeedRef = useRef<HTMLVideoElement>(null);
@@ -128,6 +135,37 @@ const StudentTest = () => {
   const [showLogoutWarning, setShowLogoutWarning] = useState(false);
 
   const questions = test?.questions || [];
+
+  const enqueueActivityEvent = (event: {
+    eventType: 'tab_hidden' | 'tab_visible' | 'window_blur' | 'window_focus' | 'fullscreen_enter' | 'fullscreen_exit' | 'question_time_spent' | 'warning_shown';
+    questionId?: string;
+    questionIndex?: number;
+    durationMs?: number;
+    meta?: Record<string, any>;
+  }) => {
+    activityQueueRef.current.push({
+      ...event,
+      timestamp: new Date().toISOString(),
+    });
+  };
+
+  const flushActivityEvents = async () => {
+    const events = activityQueueRef.current.splice(0, activityQueueRef.current.length);
+    if (!events.length) return;
+    try {
+      const studentId = localStorage.getItem('studentId');
+      const testId = localStorage.getItem('testId');
+      if (!studentId || !testId) return;
+      await authFetch(getApiUrl('/api/student/activity-events'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ studentId, testId, attemptId, events }),
+      });
+    } catch (error) {
+      // re-queue on transient failure
+      activityQueueRef.current = [...events, ...activityQueueRef.current];
+    }
+  };
 
   // Fetch test data
   useEffect(() => {
@@ -145,19 +183,9 @@ const StudentTest = () => {
         return;
       }
 
-      // Enforce SEB context
-      const isSEB = navigator.userAgent.includes('SEB') || navigator.userAgent.includes('SafeExamBrowser');
-      if (!isSEB) {
-        toast({
-          title: "SEB Required",
-          description: "You must use Safe Exam Browser to take this test. Please launch it from the exam rules page.",
-          variant: "destructive",
-        });
-        navigate('/student/tests');
-        return;
-      }
-
       try {
+        setIsTimerHydrated(false);
+        autoSubmitTriggeredRef.current = false;
         const response = await authFetch(getApiUrl(`/api/student/test/${testId}`));
 
         if (!response.ok) {
@@ -166,17 +194,13 @@ const StudentTest = () => {
         }
 
         const data = await response.json();
-        setTest({
-          id: data.id,
-          name: data.name,
-          duration: data.duration,
-          questions: (data.questions || []).map((q: any) => ({
-            ...q,
-            type: q.type || 'mcq', // Ensure type fallback
-            codingStarterCode: q.codingStarterCode,
-            codingTestCases: q.codingTestCases
-          })),
-        });
+        setAttemptId(data.attemptId || null);
+        const mappedQuestions = (data.questions || []).map((q: any) => ({
+          ...q,
+          type: q.type || 'mcq', // Ensure type fallback
+          codingStarterCode: q.codingStarterCode,
+          codingTestCases: q.codingTestCases
+        }));
 
         // Load existing progress if available
         if (data.progress) {
@@ -195,6 +219,15 @@ const StudentTest = () => {
           setCurrentQuestion(0);
           setAnswers({});
         }
+        setIsTimerHydrated(true);
+        questionEnteredAtRef.current = Date.now();
+
+        setTest({
+          id: data.id,
+          name: data.name,
+          duration: data.duration,
+          questions: mappedQuestions,
+        });
 
 
 
@@ -225,6 +258,67 @@ const StudentTest = () => {
 
     fetchTest();
   }, [navigate, toast]);
+
+  // Browser-based monitoring (tab/window/fullscreen) with batched activity logging
+  useEffect(() => {
+    if (!test) return;
+
+    const onVisibilityChange = () => {
+      if (document.hidden) {
+        enqueueActivityEvent({ eventType: 'tab_hidden', questionIndex: currentQuestion });
+        toast({
+          title: 'Warning',
+          description: 'Tab switch detected. Please stay on the test window.',
+          variant: 'destructive',
+        });
+      } else {
+        enqueueActivityEvent({ eventType: 'tab_visible', questionIndex: currentQuestion });
+      }
+    };
+
+    const onBlur = () => enqueueActivityEvent({ eventType: 'window_blur', questionIndex: currentQuestion });
+    const onFocus = () => enqueueActivityEvent({ eventType: 'window_focus', questionIndex: currentQuestion });
+
+    const onFullscreenChange = () => {
+      const inFullscreen = !!document.fullscreenElement;
+      if (inFullscreen) {
+        enqueueActivityEvent({ eventType: 'fullscreen_enter', questionIndex: currentQuestion });
+        setShowFullscreenWarning(false);
+      } else {
+        enqueueActivityEvent({ eventType: 'fullscreen_exit', questionIndex: currentQuestion });
+        setFullscreenWarnings((prev) => prev + 1);
+        setShowFullscreenWarning(true);
+        enqueueActivityEvent({
+          eventType: 'warning_shown',
+          questionIndex: currentQuestion,
+          meta: { warningType: 'fullscreen_exit' }
+        });
+      }
+    };
+
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    window.addEventListener('blur', onBlur);
+    window.addEventListener('focus', onFocus);
+    document.addEventListener('fullscreenchange', onFullscreenChange);
+
+    const flushId = setInterval(() => {
+      flushActivityEvents();
+    }, 5000);
+
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+      window.removeEventListener('blur', onBlur);
+      window.removeEventListener('focus', onFocus);
+      document.removeEventListener('fullscreenchange', onFullscreenChange);
+      clearInterval(flushId);
+      flushActivityEvents();
+    };
+  }, [test, currentQuestion, attemptId, toast]);
+
+  useEffect(() => {
+    if (!test) return;
+    requestFullscreenMode();
+  }, [test]);
 
   // Initialize camera and recording
   useEffect(() => {
@@ -530,21 +624,37 @@ const StudentTest = () => {
     }
   }, [showLogoutWarning, toast]);
 
+  // Track per-question dwell time
+  useEffect(() => {
+    if (!test || !questions[currentQuestion]) return;
+    const enteredAt = Date.now();
+    questionEnteredAtRef.current = enteredAt;
+
+    return () => {
+      const durationMs = Math.max(0, Date.now() - enteredAt);
+      const q = questions[currentQuestion];
+      if (!q) return;
+      enqueueActivityEvent({
+        eventType: 'question_time_spent',
+        questionId: q.questionId,
+        questionIndex: currentQuestion,
+        durationMs,
+      });
+    };
+  }, [currentQuestion, test]);
+
   // Timer
   useEffect(() => {
-    if (!test) return;
-
-    // If time has already run out, submit immediately
-    if (timeLeft <= 0) {
-      handleSubmitTest();
-      return;
-    }
+    if (!test || !isTimerHydrated) return;
 
     const timer = setInterval(() => {
       setTimeLeft((prev) => {
         if (prev <= 1) {
           clearInterval(timer);
-          handleSubmitTest();
+          if (!autoSubmitTriggeredRef.current) {
+            autoSubmitTriggeredRef.current = true;
+            handleSubmitTest('timer_expired');
+          }
           return 0;
         }
         return prev - 1;
@@ -561,7 +671,17 @@ const StudentTest = () => {
       clearInterval(progressTimer);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [test]);
+  }, [test, isTimerHydrated]);
+
+  // Auto-submit only after timer is fully hydrated and actually expires
+  useEffect(() => {
+    if (!test || !isTimerHydrated) return;
+    if (timeLeft > 0) return;
+    if (autoSubmitTriggeredRef.current) return;
+    autoSubmitTriggeredRef.current = true;
+    handleSubmitTest('timer_expired');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [timeLeft, test, isTimerHydrated]);
 
   // Save progress on unmount
   useEffect(() => {
@@ -599,7 +719,18 @@ const StudentTest = () => {
     return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
   };
 
-  const handleSubmitTest = async () => {
+  const requestFullscreenMode = async () => {
+    try {
+      if (!document.fullscreenElement) {
+        await document.documentElement.requestFullscreen();
+        setShowFullscreenWarning(false);
+      }
+    } catch (error) {
+      console.warn('Unable to enter fullscreen:', error);
+    }
+  };
+
+  const handleSubmitTest = async (reason: 'manual' | 'timer_expired' = 'manual') => {
     if (isSubmitting || !test) return;
 
     setIsSubmitting(true);
@@ -654,7 +785,8 @@ const StudentTest = () => {
           answers,
           startTime: startTimeRef.current?.toISOString(),
           endTime: new Date().toISOString(),
-          violations: violationsRef.current
+          violations: violationsRef.current,
+          submitReason: reason,
         })
       });
 
@@ -818,6 +950,12 @@ const StudentTest = () => {
       {/* Proctoring Header */}
       <div className="bg-card border-b sticky top-0 z-40 shadow-md">
         <div className="container max-w-7xl mx-auto py-3 px-4">
+          {showFullscreenWarning && (
+            <div className="mb-3 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900 flex items-center justify-between gap-3">
+              <span>Fullscreen exited. Please return to fullscreen. Warnings: {fullscreenWarnings}</span>
+              <Button size="sm" variant="outline" onClick={requestFullscreenMode}>Return to Fullscreen</Button>
+            </div>
+          )}
           <div className="flex items-center justify-between flex-wrap gap-4">
             {/* Left side: Pariksha AI and Proctoring Active */}
             <div className="flex items-center gap-4">
@@ -1049,7 +1187,7 @@ const StudentTest = () => {
                     </Button>
                   ) : (
                     <Button
-                      onClick={handleSubmitTest}
+                      onClick={() => handleSubmitTest('manual')}
                       className="flex-1"
                       disabled={isSubmitting}
                     >
