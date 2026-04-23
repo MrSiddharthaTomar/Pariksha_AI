@@ -84,6 +84,14 @@ MODEL: Optional[YOLO] = None
 CLASS_NAMES: Optional[Dict[int, str]] = None
 QUIET = False
 
+MIN_PERSON_CONFIDENCE = float(os.getenv("PROCTORING_MIN_PERSON_CONFIDENCE", "0.50"))
+MIN_DEVICE_CONFIDENCE = float(os.getenv("PROCTORING_MIN_DEVICE_CONFIDENCE", "0.60"))
+NO_PERSON_FRAME_RATIO = float(os.getenv("PROCTORING_NO_PERSON_FRAME_RATIO", "0.45"))
+MULTI_PERSON_FRAME_RATIO = float(os.getenv("PROCTORING_MULTI_PERSON_FRAME_RATIO", "0.35"))
+DEVICE_FRAME_RATIO = float(os.getenv("PROCTORING_DEVICE_FRAME_RATIO", "0.25"))
+MIN_EVENT_CONFIDENCE = float(os.getenv("PROCTORING_MIN_EVENT_CONFIDENCE", "0.55"))
+ENABLE_FFMPEG_FALLBACK = os.getenv("PROCTORING_ENABLE_FFMPEG_FALLBACK", "false").lower() == "true"
+
 # ------------------ HELPERS ------------------
 def timestamp():
     return time.strftime("%H:%M:%S", time.localtime())
@@ -122,9 +130,16 @@ def ensure_model():
 def _evaluate_frame(frame):
     model, names = ensure_model()
     resized = resize_w(frame, WIDTH)
-    # Lower confidence threshold to catch more detections (default is 0.25)
-    results = model(resized, imgsz=WIDTH, conf=0.3, verbose=False)[0]
+    # Start with a moderate detector confidence and apply class-specific thresholds below.
+    results = model(resized, imgsz=WIDTH, conf=0.35, verbose=False)[0]
 
+    frame_metrics: Dict[str, Any] = {
+        "person_count": 0,
+        "max_person_confidence": 0.0,
+        "device_detected": False,
+        "device_labels": [],
+        "max_device_confidence": 0.0,
+    }
     events = []
     detections = []
     devices = set()
@@ -145,11 +160,14 @@ def _evaluate_frame(frame):
             
             print(f"DEBUG: Detected {cls_name} with confidence {conf:.2f}")
 
-            if cls_name == PERSON_LABEL:
+            if cls_name == PERSON_LABEL and float(conf) >= MIN_PERSON_CONFIDENCE:
                 person_count += 1
+                frame_metrics["max_person_confidence"] = max(frame_metrics["max_person_confidence"], float(conf))
 
-            if any(keyword in cls_name.lower() for keyword in DEVICE_KEYWORDS):
+            if any(keyword in cls_name.lower() for keyword in DEVICE_KEYWORDS) and float(conf) >= MIN_DEVICE_CONFIDENCE:
                 devices.add(cls_name)
+                frame_metrics["max_device_confidence"] = max(frame_metrics["max_device_confidence"], float(conf))
+                frame_metrics["device_detected"] = True
 
             detections.append(
                 (int(x1), int(y1), int(x2), int(y2), cls_name, float(conf))
@@ -159,17 +177,22 @@ def _evaluate_frame(frame):
 
     print(f"DEBUG: Person count: {person_count}, Devices: {list(devices)}")
 
+    frame_metrics["person_count"] = person_count
+    frame_metrics["device_labels"] = list(devices)
+
     if person_count == 0:
         events.append({
             "type": "No person detected",
             "severity": "medium",
-            "details": "Student not visible"
+            "details": "Student not visible",
+            "confidence": max(0.0, 1.0 - frame_metrics["max_person_confidence"])
         })
     elif person_count > MULTI_THRESHOLD:
         events.append({
             "type": "Multiple faces detected",
             "severity": "high",
-            "details": f"{person_count} persons"
+            "details": f"{person_count} persons",
+            "confidence": frame_metrics["max_person_confidence"]
         })
 
     if devices:
@@ -178,7 +201,8 @@ def _evaluate_frame(frame):
         events.append({
             "type": label,
             "severity": "high",
-            "details": device_list
+            "details": device_list,
+            "confidence": frame_metrics["max_device_confidence"]
         })
 
     return {
@@ -186,21 +210,92 @@ def _evaluate_frame(frame):
         "detections": detections,
         "person_count": person_count,
         "devices": list(devices),
+        "frame_metrics": frame_metrics,
     }
 
 # ------------------ EVENT SUMMARY ------------------
-def summarize_events(events):
-    if not events:
+def summarize_events(frame_results):
+    if not frame_results:
         return {"hasViolation": False, "events": []}
 
+    events: List[Dict[str, Any]] = []
+    for frame_result in frame_results:
+        events.extend(frame_result.get("events", []))
+
+    total_frames = len(frame_results)
+    if total_frames == 0:
+        return {"hasViolation": False, "events": []}
+
+    no_person_frames = 0
+    multi_person_frames = 0
+    device_frames = 0
+    best_device_conf = 0.0
+    best_person_conf = 0.0
+    device_labels = set()
+
+    for frame_result in frame_results:
+        metrics = frame_result.get("frame_metrics", {}) or {}
+        person_count = int(metrics.get("person_count", 0))
+        if person_count == 0:
+            no_person_frames += 1
+        if person_count > MULTI_THRESHOLD:
+            multi_person_frames += 1
+        if metrics.get("device_detected"):
+            device_frames += 1
+            for label in metrics.get("device_labels", []):
+                device_labels.add(label)
+
+        best_device_conf = max(best_device_conf, float(metrics.get("max_device_confidence", 0.0) or 0.0))
+        best_person_conf = max(best_person_conf, float(metrics.get("max_person_confidence", 0.0) or 0.0))
+
+    candidates: List[Dict[str, Any]] = []
+    no_person_ratio = no_person_frames / total_frames
+    multi_person_ratio = multi_person_frames / total_frames
+    device_ratio = device_frames / total_frames
+
+    if no_person_ratio >= NO_PERSON_FRAME_RATIO:
+        candidates.append({
+            "hasViolation": True,
+            "violationType": "No person detected",
+            "severity": "medium",
+            "details": f"No person in {no_person_frames}/{total_frames} frames",
+            "confidence": round(min(1.0, no_person_ratio * 0.9 + 0.1), 3),
+        })
+
+    if multi_person_ratio >= MULTI_PERSON_FRAME_RATIO and best_person_conf >= MIN_EVENT_CONFIDENCE:
+        candidates.append({
+            "hasViolation": True,
+            "violationType": "Multiple faces detected",
+            "severity": "high",
+            "details": f"Multiple persons in {multi_person_frames}/{total_frames} frames",
+            "confidence": round(min(1.0, best_person_conf * 0.7 + multi_person_ratio * 0.3), 3),
+        })
+
+    if device_ratio >= DEVICE_FRAME_RATIO and best_device_conf >= MIN_EVENT_CONFIDENCE:
+        label = "Phone detected" if any("phone" in d.lower() for d in device_labels) else "Device detected"
+        candidates.append({
+            "hasViolation": True,
+            "violationType": label,
+            "severity": "high",
+            "details": ", ".join(sorted(device_labels)) if device_labels else "Prohibited device visible",
+            "confidence": round(min(1.0, best_device_conf * 0.8 + device_ratio * 0.2), 3),
+        })
+
+    if not candidates:
+        return {"hasViolation": False, "events": events}
+
     severity_rank = {"low": 0, "medium": 1, "high": 2}
-    best = max(events, key=lambda e: severity_rank.get(e.get("severity", "low"), 0))
+    best = max(
+        candidates,
+        key=lambda e: (severity_rank.get(e.get("severity", "low"), 0), e.get("confidence", 0.0)),
+    )
 
     return {
-        "hasViolation": True,
-        "violationType": best["type"],
-        "severity": best["severity"],
-        "details": best["details"],
+        "hasViolation": bool(best.get("hasViolation")),
+        "violationType": best.get("violationType"),
+        "severity": best.get("severity"),
+        "details": best.get("details"),
+        "confidence": float(best.get("confidence", 0.0)),
         "events": events,
     }
 
@@ -240,17 +335,21 @@ def analyze_video_file(path, max_frames=8):
     if not cap.isOpened():
         error_msg = f"Unable to open video file with cv2: {path} (size: {file_size} bytes)"
         print(f"ERROR: {error_msg}")
-        
-        # Try with FFMPEG backend explicitly
-        print("DEBUG: Trying with explicit FFMPEG backend (cv2.CAP_FFMPEG)...")
-        cap = cv2.VideoCapture(path, cv2.CAP_FFMPEG)
-        if not cap.isOpened():
-            print(f"ERROR: FFMPEG backend also failed")
-            
-            # Fall back to ffmpeg frame extraction
-            print("DEBUG: Will use ffmpeg to extract individual frames instead...")
-            use_ffmpeg_extract = True
-            # Don't return error - we'll try ffmpeg extraction below
+
+        if ENABLE_FFMPEG_FALLBACK:
+            # Try with FFMPEG backend explicitly
+            print("DEBUG: Trying with explicit FFMPEG backend (cv2.CAP_FFMPEG)...")
+            cap = cv2.VideoCapture(path, cv2.CAP_FFMPEG)
+            if not cap.isOpened():
+                print(f"ERROR: FFMPEG backend also failed")
+
+                # Fall back to ffmpeg frame extraction
+                print("DEBUG: Will use ffmpeg to extract individual frames instead...")
+                use_ffmpeg_extract = True
+                # Don't return error - we'll try ffmpeg extraction below
+        else:
+            print("DEBUG: FFmpeg fallback disabled; skipping ffmpeg extraction path")
+            return {"hasViolation": False, "error": "Video decode failed and ffmpeg fallback is disabled"}
 
     # If cv2 couldn't open it, try ffmpeg frame extraction
     if use_ffmpeg_extract:
@@ -335,7 +434,7 @@ def analyze_video_file(path, max_frames=8):
                 return {"hasViolation": False, "error": "No frames could be extracted"}
             
             # Process frames
-            aggregated = []
+            frame_results = []
             stride = max(1, len(frame_files) // max_frames)
             print(f"DEBUG: Processing parameters - Stride: {stride}, Max frames: {max_frames}")
             
@@ -355,12 +454,8 @@ def analyze_video_file(path, max_frames=8):
                 print(f"DEBUG: Processing frame {idx} from file {frame_file}")
                 result = _evaluate_frame(frame)
                 print(f"DEBUG: Frame {idx} events: {result['events']}")
-                aggregated.extend(result["events"])
+                frame_results.append(result)
                 processed += 1
-                
-                if any(evt.get("severity") == "high" for evt in aggregated):
-                    print(f"DEBUG: High severity event detected, stopping early")
-                    break
             
             # Clean up frames directory
             try:
@@ -370,8 +465,9 @@ def analyze_video_file(path, max_frames=8):
             except:
                 pass
             
-            print(f"DEBUG: Video analysis complete - Processed {processed} frames, Total events: {len(aggregated)}")
-            return summarize_events(aggregated)
+            all_events = sum((len(fr.get("events", [])) for fr in frame_results), 0)
+            print(f"DEBUG: Video analysis complete - Processed {processed} frames, Total events: {all_events}")
+            return summarize_events(frame_results)
             
         except Exception as e:
             print(f"ERROR: FFmpeg frame extraction failed: {e}")
@@ -398,7 +494,7 @@ def analyze_video_file(path, max_frames=8):
     
     idx = 0
     processed = 0
-    aggregated = []
+    frame_results = []
 
     while processed < max_frames:
         ret, frame = cap.read()
@@ -415,11 +511,8 @@ def analyze_video_file(path, max_frames=8):
             print(f"DEBUG: Processing frame {idx} (processed count: {processed}, shape: {frame.shape})")
             result = _evaluate_frame(frame)
             print(f"DEBUG: Frame {idx} events: {result['events']}")
-            aggregated.extend(result["events"])
+            frame_results.append(result)
             processed += 1
-            if any(evt.get("severity") == "high" for evt in aggregated):
-                print(f"DEBUG: High severity event detected, stopping early")
-                break
 
         idx += 1
 
@@ -433,9 +526,34 @@ def analyze_video_file(path, max_frames=8):
         except Exception as e:
             print(f"DEBUG: Could not delete MP4 file: {e}")
     
-    print(f"DEBUG: Video analysis complete - Processed {processed} frames, Total events: {len(aggregated)}")
+    all_events = sum((len(fr.get("events", [])) for fr in frame_results), 0)
+    print(f"DEBUG: Video analysis complete - Processed {processed} frames, Total events: {all_events}")
     
-    return summarize_events(aggregated)
+    return summarize_events(frame_results)
+
+def analyze_image_file(path):
+    if not os.path.exists(path):
+        return {"hasViolation": False, "error": f"Image file does not exist: {path}"}
+
+    frame = cv2.imread(path)
+    if frame is None:
+        return {"hasViolation": False, "error": "Could not decode image file"}
+
+    result = _evaluate_frame(frame)
+    events = result.get("events", [])
+    if not events:
+        return {"hasViolation": False, "events": []}
+
+    severity_rank = {"low": 0, "medium": 1, "high": 2}
+    best = max(events, key=lambda e: (severity_rank.get(e.get("severity", "low"), 0), e.get("confidence", 0.0)))
+    return {
+        "hasViolation": True,
+        "violationType": best.get("type"),
+        "severity": best.get("severity", "medium"),
+        "details": best.get("details", ""),
+        "confidence": float(best.get("confidence", 0.0)),
+        "events": events,
+    }
 
 # ------------------ WEBCAM MODE ------------------
 def run_stream_mode():
@@ -498,8 +616,9 @@ def main():
     global QUIET
 
     parser = argparse.ArgumentParser(description="Pariksha AI Proctoring Model")
-    parser.add_argument("--mode", choices=["stream", "analyze-video"], default="stream")
+    parser.add_argument("--mode", choices=["stream", "analyze-video", "analyze-image"], default="stream")
     parser.add_argument("--video")
+    parser.add_argument("--image")
     parser.add_argument("--max-frames", type=int, default=8)
     parser.add_argument("--quiet", action="store_true")
 
@@ -513,6 +632,15 @@ def main():
                 return
 
             result = analyze_video_file(args.video, max_frames=args.max_frames)
+            print(json.dumps(result))
+            return
+
+        if args.mode == "analyze-image":
+            if not args.image:
+                print(json.dumps({"hasViolation": False, "error": "image path required"}))
+                return
+
+            result = analyze_image_file(args.image)
             print(json.dumps(result))
             return
 

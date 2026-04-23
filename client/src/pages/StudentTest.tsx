@@ -28,6 +28,21 @@ const blobToBase64 = (blob: Blob): Promise<string> => {
   });
 };
 
+const captureVideoFrame = (videoEl: HTMLVideoElement | null): string => {
+  if (!videoEl || videoEl.videoWidth <= 0 || videoEl.videoHeight <= 0) return '';
+  const canvas = document.createElement('canvas');
+  canvas.width = videoEl.videoWidth;
+  canvas.height = videoEl.videoHeight;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return '';
+
+  // Mirror output to match what student sees in preview.
+  ctx.translate(canvas.width, 0);
+  ctx.scale(-1, 1);
+  ctx.drawImage(videoEl, 0, 0, canvas.width, canvas.height);
+  return canvas.toDataURL('image/jpeg', 0.8);
+};
+
 type DisplayCheckResult = 'multiple' | 'single' | 'unsupported' | 'permission_denied' | 'timeout';
 
 // Best-effort monitor detection for logging only (never blocks student UI).
@@ -147,6 +162,7 @@ const StudentTest = () => {
   const [showLogoutWarning, setShowLogoutWarning] = useState(false);
 
   const questions = test?.questions || [];
+  const lastSentFrameRef = useRef<string>('');
 
   const enqueueActivityEvent = (event: {
     eventType: 'tab_hidden' | 'tab_visible' | 'window_blur' | 'window_focus' | 'fullscreen_enter' | 'fullscreen_exit' | 'question_time_spent' | 'warning_shown';
@@ -428,15 +444,6 @@ const StudentTest = () => {
           mimeType: 'video/webm;codecs=vp8'
         });
 
-        // Store chunks temporarily for 10-second intervals (outside async function)
-        let tempVideoChunks: Blob[] = [];
-
-        videoRecorder.ondataavailable = (event) => {
-          if (event.data.size > 0) {
-            tempVideoChunks.push(event.data);
-          }
-        };
-
         // Create audio-only stream for audio recording
         const audioStream = new MediaStream(audioTracks);
         const audioRecorder = new MediaRecorder(audioStream, {
@@ -447,16 +454,16 @@ const StudentTest = () => {
           // Audio handled within combined stream; final submission no longer uploads blobs
         };
 
-        // Function to send 10-second chunk to server
-        const sendChunkToServer = async () => {
-          if (tempVideoChunks.length === 0) return;
-
+        // Function to send chunk to server
+        const sendChunkToServer = async (chunkBlob: Blob) => {
+          if (!chunkBlob || chunkBlob.size === 0) return;
           try {
-            // Combine chunks into a single blob
-            const chunkBlob = new Blob(tempVideoChunks, { type: 'video/webm' });
-
             // Convert to base64
             const chunkBase64 = await blobToBase64(chunkBlob);
+            const frameImage = captureVideoFrame(liveFeedRef.current);
+            if (frameImage) {
+              lastSentFrameRef.current = frameImage;
+            }
 
             // Get student ID and test ID
             const studentId = localStorage.getItem('studentId') || 'unknown';
@@ -470,6 +477,7 @@ const StudentTest = () => {
                 studentId,
                 testId,
                 videoChunk: chunkBase64,
+                frameImage: frameImage || lastSentFrameRef.current,
                 timestamp: new Date().toISOString(),
               }),
             });
@@ -486,25 +494,24 @@ const StudentTest = () => {
               }
             }
 
-            // Clear temp chunks after sending (discard)
-            tempVideoChunks.length = 0;
           } catch (error) {
             console.error('Error sending chunk to server:', error);
             // Continue recording even if chunk send fails
           }
         };
 
+        videoRecorder.ondataavailable = (event) => {
+          if (event.data.size > 0) {
+            sendChunkToServer(event.data);
+          }
+        };
+
         // Start both recorders with 10-second timeslice
-        videoRecorder.start(1000); // Collect data every second
+        videoRecorder.start(6000); // Emit chunk every 6s (more self-contained than 1s aggregation)
         audioRecorder.start(1000);
 
         videoRecorderRef.current = videoRecorder;
         audioRecorderRef.current = audioRecorder;
-
-        // Send chunks every 6 seconds
-        chunkIntervalRef.current = setInterval(() => {
-          sendChunkToServer();
-        }, 6000); // 6 seconds
 
         setIsRecording(true);
         startTimeRef.current = new Date();

@@ -48,6 +48,7 @@ function resolvePythonBinary() {
 const PYTHON_BIN = resolvePythonBinary();
 const MODEL_SCRIPT = path.join(__dirname, '../ml/procturingModel.py');
 const TEMP_DIR = path.join(process.cwd(), 'temp');
+const ENABLE_FFMPEG_FALLBACK = (process.env.PROCTORING_ENABLE_FFMPEG_FALLBACK || 'false').toLowerCase() === 'true';
 
 function ensureTempDir() {
   if (!fs.existsSync(TEMP_DIR)) {
@@ -134,13 +135,22 @@ export async function processVideoChunkWithML(
     }
 
     if (parsed && typeof parsed === 'object') {
+      const parsedConfidence =
+        typeof parsed.confidence === 'number' && Number.isFinite(parsed.confidence)
+          ? Math.max(0, Math.min(1, parsed.confidence))
+          : undefined;
       if (parsed.hasViolation) {
-        console.log(`[ML] ⚠ Violation detected: ${parsed.violationType} (${parsed.severity})`);
+        console.log(
+          `[ML] ⚠ Violation detected: ${parsed.violationType} (${parsed.severity}) confidence=${
+            parsedConfidence ?? 'n/a'
+          }`
+        );
       }
       return {
         hasViolation: !!parsed.hasViolation,
         violationType: parsed.violationType,
         severity: parsed.severity,
+        confidence: parsedConfidence,
         description: parsed.details,
         details: stderr || parsed.error,
       };
@@ -155,6 +165,79 @@ export async function processVideoChunkWithML(
   } catch (error: any) {
     console.error('[ML] Error processing video chunk with ML:', error.message);
     return { hasViolation: false };
+  }
+}
+
+export async function processFrameImageWithML(
+  frameDataUrl: string
+): Promise<{
+  hasViolation: boolean;
+  violationType?: string;
+  severity?: 'low' | 'medium' | 'high';
+  confidence?: number;
+  description?: string;
+  details?: string;
+}> {
+  try {
+    if (!frameDataUrl || !frameDataUrl.startsWith('data:image/')) {
+      return { hasViolation: false, details: 'invalid frame image data' };
+    }
+
+    ensureTempDir();
+    const imagePath = path.join(TEMP_DIR, `frame_${Date.now()}_${process.pid}.jpg`);
+    const base64Data = frameDataUrl.includes(',')
+      ? frameDataUrl.split(',')[1]
+      : frameDataUrl.replace(/^data:image\/\w+;base64,/, '');
+    const imageBuffer = Buffer.from(base64Data, 'base64');
+    fs.writeFileSync(imagePath, imageBuffer);
+
+    const args = [MODEL_SCRIPT, '--mode', 'analyze-image', '--image', imagePath, '--quiet'];
+    let stdout = '';
+    let stderr = '';
+    try {
+      const result = await execFileAsync(PYTHON_BIN, args, { maxBuffer: 10 * 1024 * 1024, timeout: 30000 });
+      stdout = result.stdout?.trim() || '';
+      stderr = result.stderr?.trim() || '';
+    } catch (error: any) {
+      stderr = error?.stderr?.toString() || error.message || '';
+      stdout = error?.stdout?.toString() || '';
+    }
+
+    try {
+      if (fs.existsSync(imagePath)) fs.unlinkSync(imagePath);
+    } catch {
+      // ignore cleanup errors
+    }
+
+    let parsed: any = null;
+    if (stdout) {
+      try {
+        const lines = stdout.split('\n').filter(Boolean);
+        const jsonLine = lines.pop() || '{}';
+        parsed = JSON.parse(jsonLine);
+      } catch {
+        parsed = null;
+      }
+    }
+
+    if (parsed && typeof parsed === 'object') {
+      const parsedConfidence =
+        typeof parsed.confidence === 'number' && Number.isFinite(parsed.confidence)
+          ? Math.max(0, Math.min(1, parsed.confidence))
+          : undefined;
+      return {
+        hasViolation: !!parsed.hasViolation,
+        violationType: parsed.violationType,
+        severity: parsed.severity,
+        confidence: parsedConfidence,
+        description: parsed.details,
+        details: stderr || parsed.error,
+      };
+    }
+
+    return { hasViolation: false, details: stderr || 'image analysis returned no parsable output' };
+  } catch (error: any) {
+    return { hasViolation: false, details: error?.message || 'image analysis failed' };
   }
 }
 
@@ -173,6 +256,13 @@ export async function extractFrameFromVideo(videoBuffer: Buffer): Promise<string
     fs.writeFileSync(tempVideoPath, videoBuffer);
     
     try {
+      if (!ENABLE_FFMPEG_FALLBACK) {
+        console.log('[ML] FFmpeg fallback disabled; skipping server-side frame extraction');
+        if (fs.existsSync(tempVideoPath)) fs.unlinkSync(tempVideoPath);
+        if (fs.existsSync(tempImagePath)) fs.unlinkSync(tempImagePath);
+        return '';
+      }
+
       // Try multiple FFmpeg approaches for WebM files
       let ffmpegSuccess = false;
       
@@ -224,32 +314,13 @@ export async function extractFrameFromVideo(videoBuffer: Buffer): Promise<string
         throw new Error('FFmpeg extraction failed');
       }
     } catch (ffmpegError) {
-      // If ffmpeg is not available or fails, create a simple placeholder image
-      console.warn('FFmpeg not available or failed, creating placeholder frame');
-      
-      // Create a simple 640x480 placeholder image
-      const { createCanvas } = require('canvas');
-      const canvas = createCanvas(640, 480);
-      const ctx = canvas.getContext('2d');
-      
-      // Fill with gray background
-      ctx.fillStyle = '#666666';
-      ctx.fillRect(0, 0, 640, 480);
-      
-      // Add text
-      ctx.fillStyle = '#ffffff';
-      ctx.font = '24px Arial';
-      ctx.textAlign = 'center';
-      ctx.fillText('Video Frame Unavailable', 320, 240);
-      ctx.fillText('FFmpeg Processing Failed', 320, 280);
-      
-      const dataUrl = canvas.toDataURL('image/jpeg', 0.8);
-      
+      console.warn('FFmpeg not available or failed; no fallback frame generated');
+
       // Cleanup
       if (fs.existsSync(tempVideoPath)) fs.unlinkSync(tempVideoPath);
       if (fs.existsSync(tempImagePath)) fs.unlinkSync(tempImagePath);
-      
-      return dataUrl;
+
+      return '';
     }
   } catch (error: any) {
     console.error('Error extracting frame from video:', error);

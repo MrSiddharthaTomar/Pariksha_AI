@@ -8,7 +8,7 @@ import Question from '../models/Question';
 import ExamAttempt from '../models/ExamAttempt';
 import AttemptEventLog from '../models/AttemptEventLog';
 import TestRecording from '../models/TestRecording';
-import { processVideoChunkWithML, extractFrameFromVideo } from '../utils/mlProctoring';
+import { processVideoChunkWithML, extractFrameFromVideo, processFrameImageWithML } from '../utils/mlProctoring';
 import { getCheatingImagesBucket } from '../utils/gridfs';
 
 const shuffleWithSeed = <T>(items: T[], seed: string): T[] => {
@@ -358,6 +358,47 @@ function mapViolationTypeToLabel(type: string): 'Phone Detected' | 'Multiple Fac
   return 'Looking Away';
 }
 
+const DEFAULT_MIN_CONFIDENCE = Number(process.env.PROCTORING_MIN_VIOLATION_CONFIDENCE || 0.55);
+const MIN_CONFIDENCE_BY_LABEL: Record<string, number> = {
+  'Phone Detected': Number(process.env.PROCTORING_MIN_CONF_PHONE || 0.56),
+  'Multiple Faces': Number(process.env.PROCTORING_MIN_CONF_MULTIPLE || 0.58),
+  'No Person Visible': Number(process.env.PROCTORING_MIN_CONF_NO_PERSON || 0.5),
+  'Audio Detected': Number(process.env.PROCTORING_MIN_CONF_AUDIO || 0.65),
+  'Looking Away': Number(process.env.PROCTORING_MIN_CONF_LOOKING_AWAY || 0.52),
+};
+const VIOLATION_DEDUPE_WINDOW_MS = Number(process.env.PROCTORING_DEDUPE_WINDOW_MS || 15000);
+const LOOKING_AWAY_WINDOW_MS = Number(process.env.PROCTORING_LOOKING_AWAY_WINDOW_MS || 45000);
+const LOOKING_AWAY_MIN_EVENTS = Number(process.env.PROCTORING_LOOKING_AWAY_MIN_EVENTS || 3);
+
+function getRequiredConfidence(label: string): number {
+  return MIN_CONFIDENCE_BY_LABEL[label] ?? DEFAULT_MIN_CONFIDENCE;
+}
+
+async function saveEvidenceImageFromDataUrl(
+  frameImage: string | undefined,
+  metadata: Record<string, any>
+): Promise<mongoose.Types.ObjectId | undefined> {
+  if (!frameImage || !frameImage.startsWith('data:image/')) return undefined;
+  const bucket = getCheatingImagesBucket();
+  const base64Data = frameImage.includes(',')
+    ? frameImage.split(',')[1]
+    : frameImage.replace(/^data:image\/\w+;base64,/, '');
+  const imageBuffer = Buffer.from(base64Data, 'base64');
+  let imageId: mongoose.Types.ObjectId | undefined;
+
+  await new Promise<void>((resolve, reject) => {
+    const uploadStream = bucket.openUploadStream(`violation_${Date.now()}.jpg`, { metadata });
+    uploadStream.on('error', reject);
+    uploadStream.on('finish', () => {
+      imageId = uploadStream.id as mongoose.Types.ObjectId;
+      resolve();
+    });
+    uploadStream.end(imageBuffer);
+  });
+
+  return imageId;
+}
+
 export const processProctorChunk = async (req: Request, res: Response) => {
   try {
     // Check MongoDB connection
@@ -368,7 +409,7 @@ export const processProctorChunk = async (req: Request, res: Response) => {
       });
     }
 
-    let { studentId, testId, videoChunk, timestamp } = req.body as any;
+    let { studentId, testId, videoChunk, frameImage, timestamp } = req.body as any;
 
     // If studentId not provided, pull from authenticated user (JWT)
     if (!studentId || studentId === 'unknown') {
@@ -393,11 +434,43 @@ export const processProctorChunk = async (req: Request, res: Response) => {
 
     console.log(`[PROCTOR] Processing chunk from student ${studentId} for test ${testId}`);
 
-    // Extract frame from video for ML processing
-    const frameImage = await extractFrameFromVideo(videoBuffer);
+    const hasClientFrameEvidence =
+      typeof frameImage === 'string' && frameImage.startsWith('data:image/');
+
+    // Extract frame from video as fallback when client frame is unavailable.
+    const extractedFrameImage = hasClientFrameEvidence
+      ? ''
+      : await extractFrameFromVideo(videoBuffer);
+    const evidenceFrameImage = hasClientFrameEvidence ? frameImage : extractedFrameImage;
 
     // Process video chunk with ML model
-    const mlResult = await processVideoChunkWithML(videoBuffer);
+    let detectionSource: 'video_chunk' | 'image_fallback' = 'video_chunk';
+    let mlResult = await processVideoChunkWithML(videoBuffer);
+    const hasEvidenceFrame = typeof evidenceFrameImage === 'string' && evidenceFrameImage.startsWith('data:image/');
+
+    // Always evaluate the frame when available and prefer whichever result has stronger confidence/severity.
+    if (hasEvidenceFrame) {
+      const imageMlResult = await processFrameImageWithML(evidenceFrameImage);
+      const severityRank: Record<string, number> = { low: 1, medium: 2, high: 3 };
+      const videoScore =
+        (severityRank[(mlResult.severity || 'low') as string] || 0) * 10 + (mlResult.confidence || 0);
+      const imageScore =
+        (severityRank[(imageMlResult.severity || 'low') as string] || 0) * 10 + (imageMlResult.confidence || 0);
+
+      const videoHasDecodeError =
+        typeof mlResult.details === 'string' &&
+        /(decode failed|invalid video dimensions|could not extract frames|unable to open video)/i.test(mlResult.details);
+
+      if (
+        imageMlResult.hasViolation &&
+        (!mlResult.hasViolation || videoHasDecodeError || imageScore >= videoScore)
+      ) {
+        mlResult = imageMlResult;
+        detectionSource = 'image_fallback';
+      }
+    } else {
+      console.log('[PROCTOR] No client/server frame available for image fallback');
+    }
 
     const logTimestamp = timestamp ? new Date(timestamp) : new Date();
 
@@ -422,44 +495,74 @@ export const processProctorChunk = async (req: Request, res: Response) => {
 
     // If we extracted a frame, attach it to the attempt for live monitoring (keeps latest snapshot)
     try {
-      if (frameImage) {
+      if (evidenceFrameImage) {
         // Use .set to avoid TypeScript property mismatch on Mongoose document type
-        attempt.set({ latestFrame: frameImage, latestFrameAt: logTimestamp });
+        attempt.set({ latestFrame: evidenceFrameImage, latestFrameAt: logTimestamp });
         await attempt.save();
       }
     } catch (frameError) {
       console.error('[PROCTOR] Error saving latest frame on attempt:', frameError);
     }
 
-    // If violation detected, also persist a ProctoringLog + GridFS copy of the frame
+    // If violation detected, persist only when confidence is strong AND image evidence is available.
     if (mlResult.hasViolation && mlResult.violationType) {
-      console.log(`[PROCTOR] Violation detected: ${mlResult.violationType} (${mlResult.severity})`);
+      const label = mapViolationTypeToLabel(mlResult.violationType);
+      const severity = mlResult.severity || 'medium';
+      const confidence = typeof mlResult.confidence === 'number' ? mlResult.confidence : 0;
+      const requiredConfidence = getRequiredConfidence(label);
+      const hasFrameEvidence =
+        typeof evidenceFrameImage === 'string' && evidenceFrameImage.startsWith('data:image/');
+
+      if (confidence < requiredConfidence) {
+        console.log(
+          `[PROCTOR] Discarded violation (low confidence): ${label} confidence=${confidence.toFixed(
+            3
+          )} required=${requiredConfidence}`
+        );
+        return res.status(200).json({
+          message: 'Chunk processed successfully',
+          violationDetected: false,
+        });
+      }
+
+      if (!hasFrameEvidence) {
+        console.log(`[PROCTOR] Discarded violation (no image evidence): ${label}`);
+        return res.status(200).json({
+          message: 'Chunk processed successfully',
+          violationDetected: false,
+        });
+      }
+
+      // Deduplicate frequent repeated events to reduce noisy false positives.
+      const recentSimilar = await ProctoringLog.findOne({
+        attemptId: attempt._id,
+        label,
+        timestamp: { $gte: new Date(logTimestamp.getTime() - VIOLATION_DEDUPE_WINDOW_MS) },
+      }).sort({ timestamp: -1 });
+
+      if (recentSimilar) {
+        console.log(`[PROCTOR] Deduped repeated violation: ${label}`);
+        return res.status(200).json({
+          message: 'Chunk processed successfully',
+          violationDetected: false,
+        });
+      }
+
+      console.log(
+        `[PROCTOR] Violation accepted: ${mlResult.violationType} (${severity}) confidence=${confidence.toFixed(
+          3
+        )} source=${detectionSource}`
+      );
 
       // Save frame as GridFS file if available
       let imageId: mongoose.Types.ObjectId | undefined;
       try {
-        if (frameImage) {
-          const bucket = getCheatingImagesBucket();
-          const base64Data = frameImage.includes(',')
-            ? frameImage.split(',')[1]
-            : frameImage.replace(/^data:image\/\w+;base64,/, '');
-          const imageBuffer = Buffer.from(base64Data, 'base64');
-
-          await new Promise<void>((resolve, reject) => {
-            const uploadStream = bucket.openUploadStream(`violation_${Date.now()}.jpg`, {
-              metadata: {
-                attemptId: attempt!._id,
-                timestamp: logTimestamp,
-                label: mlResult.violationType,
-                severity: mlResult.severity || 'medium',
-              },
-            });
-            uploadStream.on('error', reject);
-            uploadStream.on('finish', () => {
-              imageId = uploadStream.id as mongoose.Types.ObjectId;
-              resolve();
-            });
-            uploadStream.end(imageBuffer);
+        if (hasFrameEvidence) {
+          imageId = await saveEvidenceImageFromDataUrl(evidenceFrameImage, {
+            attemptId: attempt!._id,
+            timestamp: logTimestamp,
+            label: mlResult.violationType,
+            severity: mlResult.severity || 'medium',
           });
           console.log(`[PROCTOR] Saved violation image to GridFS`);
         }
@@ -467,8 +570,14 @@ export const processProctorChunk = async (req: Request, res: Response) => {
         console.error('[PROCTOR] Error saving proctoring image to GridFS:', gridfsError);
       }
 
-      const label = mapViolationTypeToLabel(mlResult.violationType);
-      const severity = mlResult.severity || 'medium';
+      // Hard requirement: violations without persisted image evidence are invalid.
+      if (!imageId) {
+        console.log(`[PROCTOR] Discarded violation (image upload missing): ${label}`);
+        return res.status(200).json({
+          message: 'Chunk processed successfully',
+          violationDetected: false,
+        });
+      }
 
       // Create proctoring log document
       const log = new ProctoringLog({
@@ -496,12 +605,17 @@ export const processProctorChunk = async (req: Request, res: Response) => {
         violationDetected: true,
         violationType: mlResult.violationType,
         severity,
+        confidence,
+        detectionSource,
       });
     } else {
-      console.log(`[PROCTOR] No violation in chunk from student ${studentId} (latest frame saved)`);
+      console.log(
+        `[PROCTOR] No violation in chunk from student ${studentId} (latest frame saved) source=${detectionSource}`
+      );
       res.status(200).json({
         message: 'Chunk processed successfully',
         violationDetected: false,
+        detectionSource,
       });
     }
   } catch (error: any) {
@@ -685,16 +799,36 @@ export const submitTest = async (req: Request, res: Response) => {
     if (Array.isArray(violations) && violations.length > 0) {
       const existingLogCount = await ProctoringLog.countDocuments({ attemptId: attempt._id });
       if (existingLogCount === 0) {
-        const violationDocs = violations.map((violation: any) => {
-          const label = mapViolationTypeToLabel(violation.type || violation.label || 'Suspicious behavior detected');
-          const severity = violation.severity || 'medium';
-          return {
-            attemptId: attempt._id,
-            timestamp: violation.timestamp ? new Date(violation.timestamp) : new Date(),
-            label,
-            severity,
-          };
-        }).filter((doc: any) => !!doc.label);
+        const latestFrame = (attempt as any).latestFrame as string | undefined;
+        const violationDocsWithEvidence = await Promise.all(
+          violations.map(async (violation: any) => {
+            const label = mapViolationTypeToLabel(violation.type || violation.label || 'Suspicious behavior detected');
+            const severity = violation.severity || 'medium';
+            const timestamp = violation.timestamp ? new Date(violation.timestamp) : new Date();
+            let imageId: mongoose.Types.ObjectId | undefined;
+            try {
+              imageId = await saveEvidenceImageFromDataUrl(latestFrame, {
+                attemptId: attempt!._id,
+                timestamp,
+                label,
+                severity,
+                source: 'submit-test-fallback',
+              });
+            } catch (error) {
+              console.error('[PROCTOR] Unable to persist submit-time violation image:', error);
+            }
+
+            if (!imageId) return null;
+            return {
+              attemptId: attempt!._id,
+              timestamp,
+              label,
+              severity,
+              imageId,
+            };
+          })
+        );
+        const violationDocs = violationDocsWithEvidence.filter((doc: any) => !!doc?.label && !!doc?.imageId);
 
         if (violationDocs.length > 0) {
           await ProctoringLog.insertMany(violationDocs);
@@ -869,11 +1003,30 @@ export const reportMonitorRisk = async (req: Request, res: Response) => {
     }
 
     const severity: 'medium' | 'high' = reason === 'multiple_detected' ? 'high' : 'medium';
+    const latestFrame = (attempt as any).latestFrame as string | undefined;
+    let imageId: mongoose.Types.ObjectId | undefined;
+    try {
+      imageId = await saveEvidenceImageFromDataUrl(latestFrame, {
+        attemptId: attempt._id,
+        timestamp: new Date(),
+        label: 'Multiple Monitors',
+        severity,
+      });
+    } catch (error) {
+      console.error('[PROCTOR] Unable to persist monitor-risk evidence image:', error);
+    }
+
+    // Hard requirement: never log violations without image evidence.
+    if (!imageId) {
+      return res.status(200).json({ message: 'Monitor risk received but skipped (no image evidence)' });
+    }
+
     await ProctoringLog.create({
       attemptId: attempt._id,
       timestamp: new Date(),
       label: 'Multiple Monitors',
       severity,
+      imageId,
     });
 
     const penalty = severity === 'high' ? 10 : 5;
@@ -949,6 +1102,59 @@ export const logActivityEvents = async (req: Request, res: Response) => {
     }));
 
     await AttemptEventLog.insertMany(docs, { ordered: false });
+
+    // Escalate repeated focus-loss patterns into a "Looking Away" proctoring log.
+    const lookingAwayEventTypes = ['tab_hidden', 'window_blur', 'fullscreen_exit'];
+    const lookingAwayCount = events.filter((evt) => lookingAwayEventTypes.includes(evt.eventType)).length;
+    if (lookingAwayCount > 0) {
+      const windowStart = new Date(Date.now() - LOOKING_AWAY_WINDOW_MS);
+      const recentActivityCount = await AttemptEventLog.countDocuments({
+        attemptId: attempt._id,
+        eventType: { $in: lookingAwayEventTypes },
+        timestamp: { $gte: windowStart },
+      });
+
+      if (recentActivityCount >= LOOKING_AWAY_MIN_EVENTS) {
+        const recentLookingAwayLog = await ProctoringLog.findOne({
+          attemptId: attempt._id,
+          label: 'Looking Away',
+          timestamp: { $gte: new Date(Date.now() - VIOLATION_DEDUPE_WINDOW_MS) },
+        }).sort({ timestamp: -1 });
+
+        if (!recentLookingAwayLog) {
+          const confidence = Math.min(1, recentActivityCount / (LOOKING_AWAY_MIN_EVENTS + 2));
+          const requiredConfidence = getRequiredConfidence('Looking Away');
+          if (confidence >= requiredConfidence) {
+            const latestFrame = (attempt as any).latestFrame as string | undefined;
+            let imageId: mongoose.Types.ObjectId | undefined;
+            try {
+              imageId = await saveEvidenceImageFromDataUrl(latestFrame, {
+                attemptId: attempt._id,
+                timestamp: new Date(),
+                label: 'Looking Away',
+                severity: 'medium',
+              });
+            } catch (error) {
+              console.error('[PROCTOR] Unable to persist looking-away evidence image:', error);
+            }
+
+            if (imageId) {
+              await ProctoringLog.create({
+                attemptId: attempt._id,
+                timestamp: new Date(),
+                label: 'Looking Away',
+                severity: 'medium',
+                imageId,
+              });
+              attempt.totalViolations += 1;
+              attempt.trustScore = Math.max(0, (attempt.trustScore || 100) - 5);
+              await attempt.save();
+            }
+          }
+        }
+      }
+    }
+
     res.status(200).json({ message: 'Activity events logged', count: docs.length });
   } catch (error: any) {
     console.error('Log activity events error:', error);
