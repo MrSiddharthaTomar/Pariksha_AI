@@ -163,12 +163,18 @@ const CreateTest = () => {
       const res = await authFetch(getApiUrl('/api/examiner/students'));
       if (!res.ok) throw new Error('Failed to fetch students');
       const data = await res.json();
-      setStudents(data.students || []);
+      // Transform the data to match the expected format
+      const transformedStudents = (data.students || []).map((s: any) => ({
+        id: s._id,
+        name: s.fullName,
+        email: s.email
+      }));
+      setStudents(transformedStudents);
       // initialize selection map only if empty
       setSelectedEmails(prev => {
         if (Object.keys(prev).length > 0) return prev;
         const map: Record<string, boolean> = {};
-        (data.students || []).forEach((s: any) => (map[s.email] = false));
+        transformedStudents.forEach((s: any) => (map[s.email] = false));
         return map;
       });
     } catch (err: any) {

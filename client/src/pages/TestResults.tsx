@@ -207,7 +207,9 @@ const TestResults = () => {
               ) : students.length === 0 ? (
                 <div className="p-4 text-muted-foreground">No student attempts found for this test.</div>
               ) : (
-                (showViolationsOnly ? students.filter(s => s.violationsCount > 0) : students).map((student) => (
+                (showViolationsOnly ? students.filter(s => s.violationsCount > 0) : students)
+                  .filter(s => !searchTerm || s.name.toLowerCase().includes(searchTerm.toLowerCase()) || s.email.toLowerCase().includes(searchTerm.toLowerCase()))
+                  .map((student) => (
                   <div 
                     key={student.attemptId}
                     className={`p-4 border rounded-lg cursor-pointer transition-all ${

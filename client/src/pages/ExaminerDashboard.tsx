@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Calendar, FileText, Plus, BarChart3, Users, LogOut, Trash, Edit, Eye, UserCircle } from "lucide-react";
+import { Calendar, FileText, Plus, BarChart3, Users, LogOut, Trash, Edit, Eye, UserCircle, Activity } from "lucide-react";
 import { getApiUrl, authFetch } from "@/lib/api-config";
 import { useToast } from "@/hooks/use-toast";
 
@@ -52,7 +52,7 @@ const ExaminerDashboard = () => {
   const statIconForLabel = (label: string) => {
     switch (label) {
       case 'Total Tests': return FileText;
-      case 'Active Students': return Users;
+      case 'Ongoing Tests': return Activity;
       case 'Completed': return BarChart3;
       case 'Scheduled': return Calendar;
       default: return FileText;

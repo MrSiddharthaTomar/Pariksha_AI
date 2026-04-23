@@ -6,15 +6,14 @@ import ProctoringLog from '../models/ProctoringLog';
 
 export const examinerDashboard = async (req: Request, res: Response) => {
   try {
-    const [totalTests, completedTests, scheduledTests, studentCount, recentTests] = await Promise.all([
+    const now = new Date();
+    const [totalTests, completedTests, scheduledTests, ongoingTests, recentTests] = await Promise.all([
       Test.countDocuments({}),
-      Test.countDocuments({ status: 'completed' }),
-      Test.countDocuments({ status: { $in: ['scheduled', 'active', 'running'] } }),
-      User.countDocuments({ role: 'student' }),
+      Test.countDocuments({ endTime: { $lt: now } }),
+      Test.countDocuments({ startTime: { $gt: now } }),
+      Test.countDocuments({ startTime: { $lte: now }, endTime: { $gte: now } }),
       Test.find({}).sort({ createdAt: -1 }).limit(10),
     ]);
-
-    const activeStudents = studentCount;
 
     // compute unreviewed proctoring logs per test
     const unreviewedAgg = await ProctoringLog.aggregate([
@@ -30,7 +29,7 @@ export const examinerDashboard = async (req: Request, res: Response) => {
     const dashboardData = {
       stats: [
         { label: 'Total Tests', value: totalTests.toString(), color: 'primary' },
-        { label: 'Active Students', value: activeStudents.toString(), color: 'secondary' },
+        { label: 'Ongoing Tests', value: ongoingTests.toString(), color: 'secondary' },
         { label: 'Completed', value: completedTests.toString(), color: 'success' },
         { label: 'Scheduled', value: scheduledTests.toString(), color: 'warning' },
       ],
