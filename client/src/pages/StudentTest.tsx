@@ -1001,9 +1001,6 @@ const StudentTest = () => {
               <p className="text-sm text-muted-foreground">
                 Test interaction is locked until you return to fullscreen mode.
               </p>
-              <div className="text-sm font-medium">
-                Time outside fullscreen: {formatTime(timeOutsideFullscreenSeconds)} ({timeOutsideFullscreenSeconds}s)
-              </div>
               <Button className="w-full" onClick={requestFullscreenMode}>
                 Return to Fullscreen
               </Button>
@@ -1085,7 +1082,9 @@ const StudentTest = () => {
               <CardHeader>
                 <div className="flex items-center justify-between">
                   <CardTitle>Question {currentQuestion + 1} of {questions.length}</CardTitle>
-                  <Badge>{Math.round(((currentQuestion + 1) / questions.length) * 100)}% Complete</Badge>
+                  <Badge>
+                    {Math.round((questions.filter(q => answers[q.id] !== undefined && answers[q.id] !== null && answers[q.id] !== '').length / questions.length) * 100)}% Complete
+                  </Badge>
                 </div>
               </CardHeader>
               <CardContent className="space-y-6">
@@ -1295,21 +1294,24 @@ const StudentTest = () => {
               </CardHeader>
               <CardContent>
                 <div className="grid grid-cols-5 gap-2">
-                  {questions.map((questionItem, index) => (
-                    <Button
-                      key={questionItem.id}
-                      variant={currentQuestion === index ? "default" : answers[questionItem.id] !== undefined ? "default" : "ghost"}
-                      size="sm"
-                      onClick={() => setCurrentQuestion(index)}
-                      className={`w-full border-2 aspect-square font-semibold transition-colors ${answers[questionItem.id] !== undefined && currentQuestion !== index
-                        ? 'bg-green-500 hover:bg-green-600 text-white border-green-600'
-                        : ''
-                        }`}
-                      disabled={isSubmitting}
-                    >
-                      {index + 1}
-                    </Button>
-                  ))}
+                  {questions.map((questionItem, index) => {
+                    const isAnswered = answers[questionItem.id] !== undefined && answers[questionItem.id] !== null && answers[questionItem.id] !== '';
+                    return (
+                      <Button
+                        key={questionItem.id}
+                        variant={currentQuestion === index ? "default" : isAnswered ? "default" : "ghost"}
+                        size="sm"
+                        onClick={() => setCurrentQuestion(index)}
+                        className={`w-full border-2 aspect-square font-semibold transition-colors ${isAnswered && currentQuestion !== index
+                          ? 'bg-green-500 hover:bg-green-600 text-white border-green-600'
+                          : ''
+                          }`}
+                        disabled={isSubmitting}
+                      >
+                        {index + 1}
+                      </Button>
+                    )
+                  })}
                 </div>
               </CardContent>
             </Card>
