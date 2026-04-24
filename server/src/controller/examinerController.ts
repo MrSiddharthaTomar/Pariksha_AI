@@ -549,7 +549,7 @@ export const getTestResults = async (req: Request, res: Response) => {
 
     const students = await Promise.all(attempts.map(async (a: any) => {
       const student = a.studentId as any;
-      const violations = await ProctoringLog.countDocuments({ attemptId: a._id });
+      const violations = await ProctoringLog.countDocuments({ attemptId: a._id, verdict: { $ne: 'invalid' } });
       const fallbackScore = (a.answers || []).reduce((acc: number, answer: any) => acc + (answer?.marksObtained ?? 0), 0);
       return {
         attemptId: (a._id as any).toString(),
@@ -638,7 +638,7 @@ export const getStudentReport = async (req: Request, res: Response) => {
     if (!attempt) return res.status(404).json({ message: 'Attempt not found for this student and test' });
 
     // Fetch proctoring logs for this attempt
-    const logs = await ProctoringLog.find({ attemptId: attempt._id }).sort({ timestamp: 1 }).lean();
+    const logs = await ProctoringLog.find({ attemptId: attempt._id, verdict: { $ne: 'invalid' } }).sort({ timestamp: 1 }).lean();
     const activityEvents = await AttemptEventLog.find({
       attemptId: attempt._id,
       eventType: { $in: ['fullscreen_exit', 'fullscreen_enter'] }
@@ -904,8 +904,8 @@ export const getMonitorEvents = async (req: Request, res: Response) => {
       attemptMap[(a._id as any).toString()] = a;
     });
 
-    // Get recent proctoring logs (limit 200)
-    const logs = await ProctoringLog.find({ attemptId: { $in: Object.keys(attemptMap) } }).sort({ timestamp: -1 }).limit(200);
+    // Get recent proctoring logs (limit 200), exclude invalid violations
+    const logs = await ProctoringLog.find({ attemptId: { $in: Object.keys(attemptMap) }, verdict: { $ne: 'invalid' } }).sort({ timestamp: -1 }).limit(200);
 
     const result = logs.map((log: any) => ({
       id: (log._id as any).toString(),

@@ -322,9 +322,14 @@ const StudentTest = () => {
     const onVisibilityChange = () => {
       if (document.hidden) {
         enqueueActivityEvent({ eventType: 'tab_hidden', questionIndex: currentQuestion });
+        violationsRef.current.push({
+          timestamp: new Date(),
+          type: 'Tab switched or window hidden',
+          severity: 'high'
+        });
         toast({
-          title: 'Warning',
-          description: 'Tab switch detected. Please stay on the test window.',
+          title: 'Violation Detected',
+          description: 'Tab switch detected. This has been logged as a violation.',
           variant: 'destructive',
         });
       } else {
@@ -332,7 +337,19 @@ const StudentTest = () => {
       }
     };
 
-    const onBlur = () => enqueueActivityEvent({ eventType: 'window_blur', questionIndex: currentQuestion });
+    const onBlur = () => {
+      enqueueActivityEvent({ eventType: 'window_blur', questionIndex: currentQuestion });
+      violationsRef.current.push({
+        timestamp: new Date(),
+        type: 'Window lost focus',
+        severity: 'medium'
+      });
+      toast({
+        title: 'Violation Detected',
+        description: 'Window lost focus. This has been logged as a violation.',
+        variant: 'destructive',
+      });
+    };
     const onFocus = () => enqueueActivityEvent({ eventType: 'window_focus', questionIndex: currentQuestion });
 
     const onFullscreenChange = () => {

@@ -162,7 +162,11 @@ function MonitorDetail({ testId, onBack }: { testId: string; onBack: () => void 
       if (!res.ok) throw new Error('Failed to apply review');
       const data = await res.json();
 
-      setEvents(prev => prev.map(ev => ev.id === logId ? { ...ev, reviewed: true, verdict: data?.log?.verdict || verdict, reviewedAt: data?.log?.reviewedAt, reviewedBy: data?.log?.reviewedBy, reviewerNotes: data?.log?.reviewerNotes } : ev));
+      if (verdict === 'invalid') {
+        setEvents(prev => prev.filter(ev => ev.id !== logId));
+      } else {
+        setEvents(prev => prev.map(ev => ev.id === logId ? { ...ev, reviewed: true, verdict: data?.log?.verdict || verdict, reviewedAt: data?.log?.reviewedAt, reviewedBy: data?.log?.reviewedBy, reviewerNotes: data?.log?.reviewerNotes } : ev));
+      }
 
       if (data?.attempt) {
         setAttemptsList(prev => prev.map(a => a.attemptId === data.attempt.attemptId ? { ...a, trustScore: data.attempt.trustScore, totalViolations: data.attempt.totalViolations } : a));
