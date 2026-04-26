@@ -3,6 +3,7 @@ import User from '../models/User';
 import mongoose from 'mongoose';
 import express, { Request, Response } from 'express';
 import {generateJwtForUser} from '../utils/jwt'
+import { isStrongPassword, PASSWORD_POLICY_MESSAGE } from '../utils/passwordPolicy';
 
 export const registerUser = async (req: Request, res: Response) => {
   try {
@@ -42,10 +43,10 @@ export const registerUser = async (req: Request, res: Response) => {
       });
     }
 
-    // Validate password length
-    if (password.length < 6) {
+    // Enforce strong passwords for all user registrations
+    if (!isStrongPassword(password)) {
       return res.status(400).json({
-        message: 'Password must be at least 6 characters long.',
+        message: PASSWORD_POLICY_MESSAGE,
         error: 'INVALID_PASSWORD'
       });
     }
@@ -78,6 +79,7 @@ export const registerUser = async (req: Request, res: Response) => {
       email: email.toLowerCase().trim(),
       password,
       role: role as 'student' | 'examiner',
+      status: role === 'examiner' ? 'pending' : 'active',
       photo,
       faceDescriptor: faceDescriptorArray,
     });
@@ -85,14 +87,31 @@ export const registerUser = async (req: Request, res: Response) => {
     // Save to MongoDB
     await newUser.save();
 
-    // Generate a token so user can be logged in immediately after registration
-    const token = generateJwtForUser(newUser);
-
     // Return success response (don't send password or face descriptor)
-    res.status(201).json({
+    if (role === 'examiner') {
+      return res.status(201).json({
+        message: 'Registration submitted. Your examiner account is pending admin approval.',
+        user: {
+          userId: (newUser._id as any).toString(),
+          role: newUser.role,
+          status: newUser.status,
+          email: newUser.email,
+          photo: newUser.photo
+        }
+      });
+    }
+
+    const token = generateJwtForUser(newUser);
+    return res.status(201).json({
       message: 'Registration successful',
       token,
-      user: { userId: (newUser._id as any).toString(), role: newUser.role, email: newUser.email, photo: newUser.photo }
+      user: {
+        userId: (newUser._id as any).toString(),
+        role: newUser.role,
+        status: newUser.status,
+        email: newUser.email,
+        photo: newUser.photo
+      }
     });
   } catch (error: any) {
     console.error('Registration error:', error);

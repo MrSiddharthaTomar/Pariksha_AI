@@ -82,10 +82,7 @@ const ExaminerRegister = () => {
           return;
         }
 
-        // If registration returns a token, store it and navigate to dashboard
-        if (data.token) {
-          localStorage.setItem('token', data.token);
-        }
+        // Examiners should not receive access until admin approval
         if (data.user) {
           localStorage.setItem('user', JSON.stringify(data.user));
         }
@@ -93,7 +90,7 @@ const ExaminerRegister = () => {
           title: "Registration Successful!",
           description: data.message || "Your examiner account has been created.",
         });
-        if (data.token) navigate('/examiner/dashboard'); else navigate('/examiner/login');
+        navigate('/examiner/login');
       } else {
         const error = await response.json();
         toast({

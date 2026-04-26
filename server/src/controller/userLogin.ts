@@ -53,6 +53,37 @@ export const userLogin = async (req: Request, res: Response) => {
       });
     }
 
+    if (role === 'examiner' && user.status !== 'approved' && user.status !== 'active') {
+      if (user.status === 'pending') {
+        return res.status(403).json({
+          message: 'Your examiner account is awaiting admin approval.',
+          error: 'ACCOUNT_PENDING_APPROVAL',
+          status: user.status
+        });
+      }
+      if (user.status === 'rejected') {
+        return res.status(403).json({
+          message: `Your application has been rejected. Reason: ${user.rejectionReason || 'Not specified by admin.'}`,
+          error: 'ACCOUNT_REJECTED',
+          status: user.status,
+          rejectionReason: user.rejectionReason || null
+        });
+      }
+      return res.status(403).json({
+        message: 'Your examiner account is inactive. Please contact support.',
+        error: 'ACCOUNT_INACTIVE',
+        status: user.status
+      });
+    }
+
+    if (role === 'student' && user.status === 'suspended') {
+      return res.status(403).json({
+        message: 'Student account is suspended.',
+        error: 'ACCOUNT_SUSPENDED',
+        status: user.status
+      });
+    }
+
     // Validate and extract face descriptor from login photo
     const faceValidation = await validateFace(photo);
     if (!faceValidation.success || !faceValidation.descriptor) {
@@ -84,6 +115,8 @@ export const userLogin = async (req: Request, res: Response) => {
 
     // Success - return user info (without password or face descriptor) and a signed JWT
     const token = generateJwtForUser(user);
+    user.lastLoginAt = new Date();
+    await user.save();
     res.status(200).json({
       message: 'Authentication Successful!',
       token,
@@ -91,6 +124,7 @@ export const userLogin = async (req: Request, res: Response) => {
         id: (user._id as any).toString(),
         name: user.fullName,
         role: user.role,
+        status: user.status,
         email: user.email,
         photo: user.photo
       }

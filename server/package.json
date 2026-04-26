@@ -9,7 +9,8 @@
     "dev": "ts-node src/server.ts",
     "build": "tsc",
     "build:watch": "tsc --watch",
-    "install-deps": "npm install"
+    "install-deps": "npm install",
+    "create-admin": "ts-node scripts/createAdmin.ts"
   },
   "keywords": [
     "exam",

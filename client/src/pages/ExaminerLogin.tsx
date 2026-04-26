@@ -53,6 +53,11 @@ const ExaminerLogin = () => {
       
       if (response.ok) {
         const data = await response.json();
+        if (!ensureSingleRole('examiner')) {
+          setIsLoading(false);
+          toast({ title: 'Aborted', description: 'Login cancelled to preserve existing role.' });
+          return;
+        }
         // Store token & user info
         if (data.token) {
           localStorage.setItem('token', data.token);
@@ -68,6 +73,14 @@ const ExaminerLogin = () => {
         navigate('/examiner/dashboard');
       } else {
         const error = await response.json();
+        if (error?.status === 'rejected' && error?.rejectionReason) {
+          toast({
+            title: "Application Rejected",
+            description: `Your application has been rejected. Reason: ${error.rejectionReason}`,
+            variant: "destructive",
+          });
+          return;
+        }
         toast({
           title: "Login Failed",
           description: error.message || "An unexpected error occurred.",

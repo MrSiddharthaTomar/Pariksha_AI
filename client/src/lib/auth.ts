@@ -29,7 +29,7 @@ export const getUserFromToken = (token: string | null) => {
 
 // Ensures only one role is active in this browser at a time.
 // If a different role is already stored, prompt the user to confirm switching.
-export const ensureSingleRole = (newRole: 'student' | 'examiner') => {
+export const ensureSingleRole = (newRole: 'student' | 'examiner' | 'admin') => {
   const existingRaw = localStorage.getItem('user');
   if (!existingRaw) return true;
   try {

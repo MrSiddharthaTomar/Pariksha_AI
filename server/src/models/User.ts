@@ -5,9 +5,12 @@ export interface IUser extends Document {
   fullName: string;
   email: string;
   password: string;
-  role: 'student' | 'examiner';
-  photo: string; // Base64 image for display
-  faceDescriptor: number[]; // Face descriptor array for face recognition
+  role: 'student' | 'examiner' | 'admin';
+  status: 'pending' | 'approved' | 'rejected' | 'active' | 'suspended';
+  rejectionReason?: string;
+  photo?: string; // Base64 image for display
+  faceDescriptor?: number[]; // Face descriptor array for face recognition
+  lastLoginAt?: Date;
   createdAt: Date;
   updatedAt: Date;
   comparePassword(candidatePassword: string): Promise<boolean>;
@@ -35,16 +38,34 @@ const UserSchema = new Schema<IUser>(
     },
     role: {
       type: String,
-      enum: ['student', 'examiner'],
+      enum: ['student', 'examiner', 'admin'],
       required: [true, 'Role is required'],
+    },
+    status: {
+      type: String,
+      enum: ['pending', 'approved', 'rejected', 'active', 'suspended'],
+      default: 'active',
+      index: true,
+    },
+    rejectionReason: {
+      type: String,
+      trim: true,
+      maxlength: [500, 'Rejection reason cannot exceed 500 characters'],
     },
     photo: {
       type: String,
-      required: [true, 'Photo is required'],
+      required: function (this: IUser) {
+        return this.role !== 'admin';
+      },
     },
     faceDescriptor: {
       type: [Number],
-      required: [true, 'Face descriptor is required'],
+      required: function (this: IUser) {
+        return this.role !== 'admin';
+      },
+    },
+    lastLoginAt: {
+      type: Date,
     },
   },
   {

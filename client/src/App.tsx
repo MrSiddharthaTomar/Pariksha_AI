@@ -11,6 +11,8 @@ const StudentRegister = lazy(() => import("./pages/StudentRegister"));
 const ExaminerRegister = lazy(() => import("./pages/ExaminerRegister"));
 const StudentLogin = lazy(() => import("./pages/StudentLogin"));
 const ExaminerLogin = lazy(() => import("./pages/ExaminerLogin"));
+const AdminLogin = lazy(() => import("./pages/AdminLogin"));
+const AdminDashboard = lazy(() => import("./pages/AdminDashboard"));
 const StudentRules = lazy(() => import("./pages/StudentRules"));
 const StudentTestList = lazy(() => import("./pages/StudentTestList"));
 const StudentTest = lazy(() => import("./pages/StudentTest"));
@@ -47,6 +49,7 @@ const App = () => (
             <Route path="/examiner/register" element={<ExaminerRegister />} />
             <Route path="/student/login" element={<StudentLogin />} />
             <Route path="/examiner/login" element={<ExaminerLogin />} />
+            <Route path="/admin/login" element={<AdminLogin />} />
             <Route path="/student/tests" element={<RequireAuth role="student"><StudentTestList /></RequireAuth>} />
             <Route path="/student/rules" element={<RequireAuth role="student"><StudentRules /></RequireAuth>} />
             <Route path="/student/test" element={<RequireAuth role="student"><StudentTest /></RequireAuth>} />
@@ -59,6 +62,7 @@ const App = () => (
             <Route path="/examiner/report/:studentId/:testId" element={<RequireAuth role="examiner"><StudentReport /></RequireAuth>} />
             <Route path="/student/profile" element={<RequireAuth role="student"><StudentProfile /></RequireAuth>} />
             <Route path="/examiner/profile" element={<RequireAuth role="examiner"><ExaminerProfile /></RequireAuth>} />
+            <Route path="/admin/dashboard" element={<RequireAuth role="admin"><AdminDashboard /></RequireAuth>} />
             {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
             <Route path="*" element={<NotFound />} />
           </Routes>

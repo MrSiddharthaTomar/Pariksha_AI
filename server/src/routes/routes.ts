@@ -6,8 +6,21 @@ import { examinerDashboard, createTest, getTestDetails, getStudents, getLiveTest
 import { getEnrolledTests, getTestById, processProctorChunk, startAttempt, submitTest, saveProgress, recordLogout, reportMonitorRisk, logActivityEvents } from "../controller/studentController";
 import { loadModels, aiGenerateTest } from "../controller/generalController";
 import { updateProfilePic } from "../controller/updateProfilePic";
+import {
+  adminLogin,
+  authenticateAdminSession,
+  adminLogout,
+  getAdminDashboard,
+  approveExaminer,
+  rejectExaminer,
+  updateUserRoleStatus,
+  listSystemActivity,
+} from "../controller/adminController";
+import { createRateLimiter } from "../middleware/rateLimit";
+import User from "../models/User";
 
 const router = express.Router();
+const loginRateLimit = createRateLimiter(5, 15 * 60 * 1000);
 
 // ============================================
 // Role-based middleware
@@ -20,6 +33,38 @@ const requireRole = (role: string) => (req: Request, res: Response, next: NextFu
   next();
 };
 
+const requireApprovedExaminer = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const user = (req as any).user;
+    if (!user?.id) {
+      return res.status(401).json({ message: 'Unauthorized' });
+    }
+
+    const dbUser = await User.findById(user.id).select('status role rejectionReason');
+    if (!dbUser || dbUser.role !== 'examiner') {
+      return res.status(403).json({ message: 'Forbidden: invalid examiner account' });
+    }
+
+    if (dbUser.status !== 'approved' && dbUser.status !== 'active') {
+      if (dbUser.status === 'pending') {
+        return res.status(403).json({ message: 'Your examiner account is awaiting admin approval.', error: 'ACCOUNT_PENDING_APPROVAL' });
+      }
+      if (dbUser.status === 'rejected') {
+        return res.status(403).json({
+          message: `Your application has been rejected. Reason: ${dbUser.rejectionReason || 'Not specified by admin.'}`,
+          error: 'ACCOUNT_REJECTED',
+          rejectionReason: dbUser.rejectionReason || null,
+        });
+      }
+      return res.status(403).json({ message: 'Your examiner account is inactive.', error: 'ACCOUNT_INACTIVE' });
+    }
+
+    return next();
+  } catch (error: any) {
+    return res.status(500).json({ message: 'Failed to validate examiner account.', error: 'INTERNAL_ERROR' });
+  }
+};
+
 // ============================================
 // General routes (no authentication required)
 // ============================================
@@ -30,13 +75,25 @@ router.post('/test/ai-generate', aiGenerateTest);
 // Auth routes (no authentication required)
 // ============================================
 router.post('/auth/:role/register', registerUser);
-router.post('/auth/:role/login', userLogin);
+router.post('/auth/:role/login', loginRateLimit, userLogin);
+router.post('/admin/login', loginRateLimit, adminLogin);
 router.put('/auth/profile-image', authenticateJWT, updateProfilePic);
+
+// ============================================
+// Admin routes (dedicated auth + admin role)
+// ============================================
+router.use('/admin', authenticateAdminSession);
+router.post('/admin/logout', adminLogout);
+router.get('/admin/dashboard', getAdminDashboard);
+router.post('/admin/examiners/:examinerId/approve', approveExaminer);
+router.post('/admin/examiners/:examinerId/reject', rejectExaminer);
+router.patch('/admin/users/:userId', updateUserRoleStatus);
+router.get('/admin/activity', listSystemActivity);
 
 // ============================================
 // Examiner routes (requires auth + examiner role)
 // ============================================
-router.use('/examiner', authenticateJWT, requireRole('examiner'));
+router.use('/examiner', authenticateJWT, requireRole('examiner'), requireApprovedExaminer);
 
 router.get('/examiner/dashboard', examinerDashboard);
 router.post('/examiner/tests', createTest);
