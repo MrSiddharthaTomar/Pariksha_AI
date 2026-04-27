@@ -7,8 +7,7 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { ArrowLeft, Search, Mail, AlertTriangle, Trophy } from "lucide-react";
-import { useToast } from "@/hooks/use-toast";
+import { ArrowLeft, Search, AlertTriangle } from "lucide-react";
 
 interface StudentResult {
   attemptId: string;
@@ -24,11 +23,8 @@ interface StudentResult {
 const TestResults = () => {
   const navigate = useNavigate();
   const { testId } = useParams();
-  const { toast } = useToast();
   const [searchTerm, setSearchTerm] = useState('');
   const [sortBy, setSortBy] = useState('name');
-  const [selectedStudents, setSelectedStudents] = useState<string[]>([]);
-  const [topNStudents, setTopNStudents] = useState('');
   const [showViolationsOnly, setShowViolationsOnly] = useState(false);
 
   const [students, setStudents] = useState<StudentResult[]>([]);
@@ -39,32 +35,6 @@ const TestResults = () => {
   const handleSortChange = (value: string) => {
     setSortBy(value);
     // TODO: Implement sorting logic
-  };
-
-  const handleSelectTopN = () => {
-    const n = parseInt(topNStudents);
-    if (isNaN(n) || n <= 0) return;
-    
-    const sorted = [...students].sort((a, b) => b.actualScore - a.actualScore);
-    const topIds = sorted.slice(0, n).map(s => s.studentId || s.attemptId);
-    setSelectedStudents(topIds);
-  };
-
-  const handleSendEmails = () => {
-    if (selectedStudents.length === 0) {
-      toast({
-        title: "No Students Selected",
-        description: "Please select students to send emails",
-        variant: "destructive",
-      });
-      return;
-    }
-
-    // TODO: Integrate with real email API
-    toast({
-      title: "Emails Sent",
-      description: `Successfully sent emails to ${selectedStudents.length} students`,
-    });
   };
 
   const getTrustColor = (score: number) => {
@@ -164,22 +134,6 @@ const TestResults = () => {
                   </SelectContent>
                 </Select>
               </div>
-
-              <div className="space-y-2">
-                <Label htmlFor="topN">Select Top N Students</Label>
-                <div className="flex gap-2">
-                  <Input 
-                    id="topN"
-                    type="number"
-                    placeholder="e.g., 5"
-                    value={topNStudents}
-                    onChange={(e) => setTopNStudents(e.target.value)}
-                  />
-                  <Button onClick={handleSelectTopN} variant="outline">
-                    <Trophy className="h-4 w-4" />
-                  </Button>
-                </div>
-              </div>
             </div>
 
             <div className="flex items-center gap-3 mt-3">
@@ -189,10 +143,6 @@ const TestResults = () => {
               </Button>
             </div>
 
-            <Button onClick={handleSendEmails} disabled={selectedStudents.length === 0}>
-              <Mail className="mr-2 h-4 w-4" />
-              Send Emails to Selected ({selectedStudents.length})
-            </Button>
           </CardContent>
         </Card>
 
@@ -212,17 +162,7 @@ const TestResults = () => {
                   .map((student) => (
                   <div 
                     key={student.attemptId}
-                    className={`p-4 border rounded-lg cursor-pointer transition-all ${
-                      selectedStudents.includes(student.studentId || student.attemptId) ? 'bg-primary/5 border-primary' : 'hover:bg-muted/50'
-                    }`}
-                    onClick={() => {
-                      const idKey = student.studentId || student.attemptId;
-                      setSelectedStudents(prev => 
-                        prev.includes(idKey) 
-                          ? prev.filter(id => id !== idKey)
-                          : [...prev, idKey]
-                      );
-                    }}
+                    className="p-4 border rounded-lg transition-all hover:bg-muted/50"
                   >
                     <div className="flex items-center justify-between flex-wrap gap-4">
                       <div className="flex-1">

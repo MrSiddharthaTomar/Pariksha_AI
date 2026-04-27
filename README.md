@@ -120,6 +120,7 @@ GEMINI_API_KEY=
 ANTHROPIC_API_KEY=
 JWT_SECRET=
 JWT_EXPIRES_IN=
+ADMIN_ACCESS_KEY=
 
 
 # CRITICAL: Point to your Python environment with ML dependencies installed
