@@ -13,6 +13,7 @@ dotenv.config();
 
 import mongoose from 'mongoose';
 import router from './routes/routes';
+import { runAttemptLifecycleSweep } from './controller/studentController';
 
 // ============================================
 // Environment Configuration
@@ -150,9 +151,20 @@ const startServer = async () => {
       console.log('========================================\n');
     });
 
+    const lifecycleSweep = setInterval(async () => {
+      try {
+        if (mongoose.connection.readyState === 1) {
+          await runAttemptLifecycleSweep();
+        }
+      } catch (error) {
+        console.error('Attempt lifecycle sweep failed:', error);
+      }
+    }, 10000);
+
     // Graceful shutdown
     process.on('SIGTERM', () => {
       console.log('SIGTERM signal received: closing HTTP server');
+      clearInterval(lifecycleSweep);
       server.close(() => {
         console.log('HTTP server closed');
         mongoose.connection.close();
@@ -162,6 +174,7 @@ const startServer = async () => {
 
     process.on('SIGINT', () => {
       console.log('SIGINT signal received: closing HTTP server');
+      clearInterval(lifecycleSweep);
       server.close(() => {
         console.log('HTTP server closed');
         mongoose.connection.close();

@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
@@ -42,6 +42,8 @@ const captureVideoFrame = (videoEl: HTMLVideoElement | null): string => {
   ctx.drawImage(videoEl, 0, 0, canvas.width, canvas.height);
   return canvas.toDataURL('image/jpeg', 0.8);
 };
+
+const CAMERA_WARMUP_MS = 8000;
 
 type DisplayCheckResult = 'multiple' | 'single' | 'unsupported' | 'permission_denied' | 'timeout';
 
@@ -116,12 +118,16 @@ interface StudentTestData {
   questions: TestQuestion[];
 }
 
+const HEARTBEAT_INTERVAL_MS = 10000;
+const ANSWER_SAVE_DEBOUNCE_MS = 600;
+const PROGRESS_SAVE_DEBOUNCE_MS = 1000;
+
 const StudentTest = () => {
   const navigate = useNavigate();
   const { toast } = useToast();
   const [timeLeft, setTimeLeft] = useState(0);
   const [currentQuestion, setCurrentQuestion] = useState(0);
-  const [answers, setAnswers] = useState<Record<number, number | string>>({});
+  const [answers, setAnswers] = useState<Record<string, number | string>>({});
   const [isRecording, setIsRecording] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isRunningCode, setIsRunningCode] = useState(false);
@@ -159,10 +165,18 @@ const StudentTest = () => {
   const chunkIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const monitorRiskIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const lastMonitorRiskReportRef = useRef<{ reason: string; at: number } | null>(null);
-  const [showLogoutWarning, setShowLogoutWarning] = useState(false);
+  const [showExitWarning, setShowExitWarning] = useState(false);
+  const [exitCount, setExitCount] = useState(0);
+  const [allowedExits, setAllowedExits] = useState(2);
+  const hasSubmittedRef = useRef(false);
+  const exitSignalSentRef = useRef(false);
 
   const questions = test?.questions || [];
   const lastSentFrameRef = useRef<string>('');
+  const cameraReadyAtRef = useRef<number | null>(null);
+  const getAnswerKey = useCallback((question: TestQuestion) => {
+    return question.questionId || String(question.id);
+  }, []);
 
   const enqueueActivityEvent = (event: {
     eventType: 'tab_hidden' | 'tab_visible' | 'window_blur' | 'window_focus' | 'fullscreen_enter' | 'fullscreen_exit' | 'question_time_spent' | 'warning_shown';
@@ -194,6 +208,110 @@ const StudentTest = () => {
       activityQueueRef.current = [...events, ...activityQueueRef.current];
     }
   };
+
+  const applyAttemptSync = useCallback((payload?: { remainingTime?: number; exitCount?: number; allowedExits?: number; autoSubmitted?: boolean }) => {
+    if (!payload) return;
+    if (typeof payload.remainingTime === 'number') {
+      setTimeLeft(Math.max(0, payload.remainingTime));
+    }
+    if (typeof payload.exitCount === 'number') {
+      setExitCount(payload.exitCount);
+    }
+    if (typeof payload.allowedExits === 'number') {
+      setAllowedExits(payload.allowedExits);
+    }
+    if (payload.autoSubmitted) {
+      hasSubmittedRef.current = true;
+    }
+  }, []);
+
+  const saveProgress = useCallback(async (progressAnswers?: Record<string, number | string>, questionIndex?: number) => {
+    if (!isTimerHydratedRef.current || hasSubmittedRef.current) return;
+    try {
+      const testId = localStorage.getItem('testId');
+      const studentId = localStorage.getItem('studentId');
+
+      if (!testId || !studentId) return;
+
+      const response = await authFetch(getApiUrl('/api/student/save-progress'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          studentId,
+          testId,
+          currentQuestionIndex: questionIndex ?? currentQuestion,
+          answers: progressAnswers ?? answers,
+        }),
+      });
+
+      if (response.ok) {
+        applyAttemptSync(await response.json());
+      }
+    } catch (error) {
+      console.warn('Failed to save progress:', error);
+    }
+  }, [answers, applyAttemptSync, currentQuestion]);
+
+  const sendHeartbeat = useCallback(async () => {
+    if (!test || hasSubmittedRef.current) return;
+    try {
+      const studentId = localStorage.getItem('studentId');
+      const testId = localStorage.getItem('testId') || test.id;
+      if (!studentId || !testId) return;
+
+      const response = await authFetch(getApiUrl('/api/student/heartbeat'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          studentId,
+          testId,
+          attemptId,
+          currentQuestionIndex: currentQuestion,
+          visibilityState: document.visibilityState,
+        }),
+      });
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({}));
+        if (response.status === 409 && error?.autoSubmitted) {
+          hasSubmittedRef.current = true;
+          toast({
+            title: 'Test Submitted',
+            description: 'Your exam was auto-submitted by the server.',
+          });
+          navigate('/');
+        }
+        return;
+      }
+
+      applyAttemptSync(await response.json());
+    } catch (error) {
+      console.warn('Heartbeat failed:', error);
+    }
+  }, [applyAttemptSync, attemptId, currentQuestion, navigate, test, toast]);
+
+  const sendExitSignal = useCallback((source: 'pagehide' | 'visibilitychange' | 'navigation') => {
+    if (hasSubmittedRef.current || exitSignalSentRef.current) return;
+
+    const studentId = localStorage.getItem('studentId');
+    const testId = localStorage.getItem('testId') || test?.id;
+    const token = localStorage.getItem('token');
+
+    if (!studentId || !testId || !token) return;
+
+    exitSignalSentRef.current = true;
+    void fetch(getApiUrl('/api/student/session-exit'), {
+      method: 'POST',
+      keepalive: true,
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ studentId, testId, source }),
+    }).catch(() => {
+      exitSignalSentRef.current = false;
+    });
+  }, [test]);
 
   // Fetch test data
   useEffect(() => {
@@ -235,18 +353,18 @@ const StudentTest = () => {
         if (data.progress) {
           setCurrentQuestion(data.progress.currentQuestionIndex || 0);
           setAnswers(data.progress.answers || {});
-          if (data.progress.timeRemaining !== undefined) {
-            setTimeLeft(data.progress.timeRemaining);
-          } else {
-            setTimeLeft((data.duration || 60) * 60);
-          }
-          if (data.progress.showLogoutWarning) {
-            setShowLogoutWarning(true);
+          setTimeLeft(data.progress.timeRemaining ?? (data.duration || 60) * 60);
+          setExitCount(data.progress.exitCount || 0);
+          setAllowedExits(data.progress.allowedExits || 2);
+          if (data.progress.showExitWarning) {
+            setShowExitWarning(true);
           }
         } else {
           setTimeLeft((data.duration || 60) * 60);
           setCurrentQuestion(0);
           setAnswers({});
+          setExitCount(0);
+          setAllowedExits(2);
         }
         setIsTimerHydrated(true);
         isTimerHydratedRef.current = true;
@@ -449,6 +567,13 @@ const StudentTest = () => {
         if (liveFeedRef.current) {
           liveFeedRef.current.srcObject = combinedStream;
           liveFeedRef.current.play().catch(console.error);
+          const onCameraReady = () => {
+            if (cameraReadyAtRef.current === null) {
+              cameraReadyAtRef.current = Date.now();
+            }
+          };
+          liveFeedRef.current.addEventListener('loadeddata', onCameraReady, { once: true });
+          liveFeedRef.current.addEventListener('canplay', onCameraReady, { once: true });
         }
 
         // Get video and audio tracks separately for recording
@@ -475,9 +600,17 @@ const StudentTest = () => {
         const sendChunkToServer = async (chunkBlob: Blob) => {
           if (!chunkBlob || chunkBlob.size === 0) return;
           try {
+            const cameraReadyAt = cameraReadyAtRef.current;
+            if (!cameraReadyAt || Date.now() - cameraReadyAt < CAMERA_WARMUP_MS) {
+              return;
+            }
+
             // Convert to base64
             const chunkBase64 = await blobToBase64(chunkBlob);
             const frameImage = captureVideoFrame(liveFeedRef.current);
+            if (!frameImage) {
+              return;
+            }
             if (frameImage) {
               lastSentFrameRef.current = frameImage;
             }
@@ -635,73 +768,45 @@ const StudentTest = () => {
     };
   }, [test]);
 
-  // Handle logout/session end recording
+  // Handle session exit signals
   useEffect(() => {
-    const handleBeforeUnload = async () => {
-      try {
-        const testId = localStorage.getItem('testId');
-        const studentId = localStorage.getItem('studentId');
-        if (testId && studentId) {
-          await authFetch(getApiUrl('/api/student/record-logout'), {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ studentId, testId }),
-          });
-        }
-      } catch (error) {
-        console.warn('Failed to record logout:', error);
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') {
+        sendExitSignal('visibilitychange');
+      } else {
+        exitSignalSentRef.current = false;
       }
     };
 
-    // Record logout on page unload (logout/close tab)
-    window.addEventListener('beforeunload', handleBeforeUnload);
+    const onPageHide = () => sendExitSignal('pagehide');
+
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    window.addEventListener('pagehide', onPageHide);
 
     return () => {
-      window.removeEventListener('beforeunload', handleBeforeUnload);
-      // Also record logout on component unmount
-      handleBeforeUnload();
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+      window.removeEventListener('pagehide', onPageHide);
+      if (!hasSubmittedRef.current) {
+        sendExitSignal('navigation');
+      }
     };
-  }, []);
+  }, [sendExitSignal]);
 
-  // Save progress to server
-  const saveProgress = async () => {
-    if (!isTimerHydratedRef.current) return;
-    try {
-      const testId = localStorage.getItem('testId');
-      const studentId = localStorage.getItem('studentId');
 
-      if (!testId || !studentId) return;
 
-      await authFetch(getApiUrl('/api/student/save-progress'), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          studentId,
-          testId,
-          currentQuestionIndex: currentQuestion,
-          timeRemaining: timeLeft,
-          answers,
-        }),
-      });
-    } catch (error) {
-      console.warn('Failed to save progress:', error);
-    }
-  };
-
-  // Duplicate useEffects removed here
-
-  // Show logout warning
+  // Show exit warning on resume
   useEffect(() => {
-    if (showLogoutWarning) {
+    if (showExitWarning) {
+      const remaining = Math.max(0, allowedExits - exitCount);
       toast({
         title: "Session Resumed",
-        description: "Warning: Do not close/refresh the tab or your exam might get cancelled. The timer has been running in the background.",
+        description: `Please do not refresh the page or click back button it will terminate your test.`,
         variant: "destructive",
-        duration: 10000, // Show for 10 seconds
+        duration: 10000,
       });
-      setShowLogoutWarning(false); // Reset so it doesn't show again
+      setShowExitWarning(false);
     }
-  }, [showLogoutWarning, toast]);
+  }, [allowedExits, exitCount, showExitWarning, toast]);
 
   // Track per-question dwell time
   useEffect(() => {
@@ -726,6 +831,8 @@ const StudentTest = () => {
   useEffect(() => {
     if (!test || !isTimerHydrated) return;
 
+    void sendHeartbeat();
+
     const timer = setInterval(() => {
       setTimeLeft((prev) => {
         if (prev <= 1) {
@@ -740,17 +847,16 @@ const StudentTest = () => {
       });
     }, 1000);
 
-    // Save progress every 30 seconds
-    const progressTimer = setInterval(() => {
-      saveProgress();
-    }, 30000);
+    const heartbeatTimer = setInterval(() => {
+      void sendHeartbeat();
+    }, HEARTBEAT_INTERVAL_MS);
 
     return () => {
       clearInterval(timer);
-      clearInterval(progressTimer);
+      clearInterval(heartbeatTimer);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [test, isTimerHydrated]);
+  }, [test, isTimerHydrated, sendHeartbeat]);
 
   // Auto-submit only after timer is fully hydrated and actually expires
   useEffect(() => {
@@ -771,18 +877,25 @@ const StudentTest = () => {
   useEffect(() => {
     return () => {
       // Save progress when component unmounts
-      saveProgressRef.current();
+      void saveProgressRef.current();
     };
   }, []);
 
   useEffect(() => {
-    // Save progress when answers change (debounced)
     const timeoutId = setTimeout(() => {
-      saveProgress();
-    }, 2000); // Save 2 seconds after answer changes
+      void saveProgress(answers, currentQuestion);
+    }, ANSWER_SAVE_DEBOUNCE_MS);
 
     return () => clearTimeout(timeoutId);
-  }, [answers, currentQuestion, timeLeft]);
+  }, [answers, currentQuestion, saveProgress]);
+
+  useEffect(() => {
+    const timeoutId = setTimeout(() => {
+      void saveProgress(answers, currentQuestion);
+    }, PROGRESS_SAVE_DEBOUNCE_MS);
+
+    return () => clearTimeout(timeoutId);
+  }, [currentQuestion, saveProgress, answers]);
 
   // Ensure video stream is properly set when live feed becomes visible
   useEffect(() => {
@@ -875,7 +988,8 @@ const StudentTest = () => {
       });
 
       if (response.ok) {
-        const data = await response.json();
+        await response.json();
+        hasSubmittedRef.current = true;
         toast({
           title: "Test Submitted",
           description: "Your exam has been submitted successfully",
@@ -883,6 +997,11 @@ const StudentTest = () => {
         navigate('/');
       } else {
         const error = await response.json();
+        if (response.status === 409) {
+          hasSubmittedRef.current = true;
+          navigate('/');
+          return;
+        }
         toast({
           title: "Submission Failed",
           description: error.message || "Failed to submit test. Please try again.",
@@ -933,9 +1052,10 @@ const StudentTest = () => {
   }
 
   const currentQuestionData = questions[currentQuestion];
+  const currentAnswerKey = currentQuestionData ? getAnswerKey(currentQuestionData) : '';
 
   const handleRunBatch = async () => {
-    const code = answers[currentQuestionData.id] || currentQuestionData.codingStarterCode || '';
+    const code = answers[currentAnswerKey] || currentQuestionData.codingStarterCode || '';
     if (!code) return;
 
     setIsRunningCode(true);
@@ -970,7 +1090,7 @@ const StudentTest = () => {
   };
 
   const handleRunCustom = async () => {
-    const code = answers[currentQuestionData.id] || currentQuestionData.codingStarterCode || '';
+    const code = answers[currentAnswerKey] || currentQuestionData.codingStarterCode || '';
     if (!code) return;
 
     setIsRunningCode(true);
@@ -1052,6 +1172,9 @@ const StudentTest = () => {
       {/* Proctoring Header */}
       <div className="bg-card border-b sticky top-0 z-40 shadow-md">
         <div className="container max-w-7xl mx-auto py-3 px-4">
+          <div className="mb-3 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+            You have {Math.max(0, allowedExits - exitCount)} remaining attempts before auto-submission.
+          </div>
           {showFullscreenWarning && (
             <div className="mb-3 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900 flex items-center justify-between gap-3">
               <span>Fullscreen exited. Please return to fullscreen. Warnings: {fullscreenWarnings}</span>
@@ -1100,7 +1223,7 @@ const StudentTest = () => {
                 <div className="flex items-center justify-between">
                   <CardTitle>Question {currentQuestion + 1} of {questions.length}</CardTitle>
                   <Badge>
-                    {Math.round((questions.filter(q => answers[q.id] !== undefined && answers[q.id] !== null && answers[q.id] !== '').length / questions.length) * 100)}% Complete
+                    {Math.round((questions.filter(q => answers[getAnswerKey(q)] !== undefined && answers[getAnswerKey(q)] !== null && answers[getAnswerKey(q)] !== '').length / questions.length) * 100)}% Complete
                   </Badge>
                 </div>
               </CardHeader>
@@ -1139,11 +1262,11 @@ const StudentTest = () => {
 
                     <CodeEditor
                       language={selectedLanguage}
-                      value={(answers[currentQuestionData.id] as string) || currentQuestionData.codingStarterCode || ''}
+                      value={(answers[currentAnswerKey] as string) || currentQuestionData.codingStarterCode || ''}
                       onChange={(val) => {
                         setAnswers(prev => ({
                           ...prev,
-                          [currentQuestionData.id]: val || ''
+                          [currentAnswerKey]: val || ''
                         }));
                       }}
                     />
@@ -1241,12 +1364,12 @@ const StudentTest = () => {
                   </div>
                 ) : (
                   <RadioGroup
-                    value={answers[currentQuestionData.id]?.toString() ?? ''}
+                    value={answers[currentAnswerKey]?.toString() ?? ''}
                     onValueChange={(value) => {
                       const selectedIndex = parseInt(value, 10);
                       setAnswers(prev => ({
                         ...prev,
-                        [currentQuestionData.id]: selectedIndex,
+                        [currentAnswerKey]: selectedIndex,
                       }));
                     }}
                   >
@@ -1257,12 +1380,12 @@ const StudentTest = () => {
                         onClick={() => {
                           setAnswers(prev => ({
                             ...prev,
-                            [currentQuestionData.id]: index,
+                            [currentAnswerKey]: index,
                           }));
                         }}
                       >
-                        <RadioGroupItem value={index.toString()} id={`q${currentQuestionData.id}-${index}`} />
-                        <Label htmlFor={`q${currentQuestionData.id}-${index}`} className="flex-1 cursor-pointer">
+                        <RadioGroupItem value={index.toString()} id={`q${currentAnswerKey}-${index}`} />
+                        <Label htmlFor={`q${currentAnswerKey}-${index}`} className="flex-1 cursor-pointer">
                           {option}
                         </Label>
                       </div>
@@ -1312,7 +1435,8 @@ const StudentTest = () => {
               <CardContent>
                 <div className="grid grid-cols-5 gap-2">
                   {questions.map((questionItem, index) => {
-                    const isAnswered = answers[questionItem.id] !== undefined && answers[questionItem.id] !== null && answers[questionItem.id] !== '';
+                    const answerKey = getAnswerKey(questionItem);
+                    const isAnswered = answers[answerKey] !== undefined && answers[answerKey] !== null && answers[answerKey] !== '';
                     return (
                       <Button
                         key={questionItem.id}

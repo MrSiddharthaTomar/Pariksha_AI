@@ -247,9 +247,12 @@ function MonitorDetail({ testId, onBack }: { testId: string; onBack: () => void 
                       </CardHeader>
                       <CardContent>
                         {a.latestFrame ? (
-                          <a href={a.latestFrame} target="_blank" rel="noreferrer">
-                            <img src={a.latestFrame} alt="live" className="w-full h-40 object-cover rounded-md" />
-                          </a>
+                          <div>
+                            <img src={a.latestFrame} alt="live preview" className="w-full h-40 object-cover rounded-md" />
+                            <div className="mt-2 text-xs text-muted-foreground">
+                              Live feed view is temporarily unavailable.
+                            </div>
+                          </div>
                         ) : (
                           <div className="w-full h-40 bg-muted rounded-md flex items-center justify-center text-sm text-muted-foreground">No live frame yet</div>
                         )}

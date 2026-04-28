@@ -206,12 +206,27 @@ export const getTestById = async (req: Request, res: Response) => {
           testId,
           studentId,
           status: 'in-progress',
+          startTime: new Date(),
           startedAt: new Date(),
+          duration: Math.max(0, Math.round((test.duration || 60) * 60)),
           totalScore: 0,
           trustScore: 100,
           totalViolations: 0,
           questionsAttempted: 0,
           answers: [],
+          partialAnswers: {},
+          exitCount: 0,
+          isSubmitted: false,
+          lastHeartbeatAt: new Date(),
+          lastActivityAt: new Date(),
+        });
+      }
+
+      await enforceAttemptState(existingAttempt, now);
+      if (existingAttempt.status === 'submitted' || existingAttempt.isSubmitted) {
+        return res.status(403).json({
+          message: 'This attempt has already been submitted.',
+          error: existingAttempt.submissionReason === 'timer_expired' ? 'TEST_AUTO_SUBMITTED_TIME_EXPIRED' : 'TEST_ALREADY_SUBMITTED',
         });
       }
 
@@ -219,33 +234,17 @@ export const getTestById = async (req: Request, res: Response) => {
 
       // If there's an in-progress attempt, include the progress data
       if (existingAttempt.status === 'in-progress') {
-        let timeRemaining = existingAttempt.timeRemaining;
-        let showLogoutWarning = false;
-
-        // Check if student logged out and logged back in
-        if (existingAttempt.lastLogoutAt) {
-          const now = new Date();
-          const logoutDuration = Math.floor((now.getTime() - existingAttempt.lastLogoutAt.getTime()) / 1000); // in seconds
-
-          // Subtract logout time from remaining time
-          if (timeRemaining !== undefined && timeRemaining > logoutDuration) {
-            timeRemaining = timeRemaining - logoutDuration;
-          } else if (timeRemaining !== undefined) {
-            timeRemaining = 0; // Time ran out during logout
-          }
-
-          // Clear the logout time since we're handling it now
-          existingAttempt.lastLogoutAt = undefined;
-          existingAttempt.sessionWarningsShown = (existingAttempt.sessionWarningsShown || 0) + 1;
-          showLogoutWarning = true;
-          await existingAttempt.save();
-        }
+        const timeRemaining = getRemainingTimeSeconds(existingAttempt, now);
+        const remainingExitAttempts = Math.max(0, MAX_ALLOWED_EXITS - (existingAttempt.exitCount || 0));
 
         existingProgress = {
           currentQuestionIndex: existingAttempt.currentQuestionIndex || 0,
           timeRemaining,
           answers: existingAttempt.partialAnswers || {},
-          showLogoutWarning,
+          exitCount: existingAttempt.exitCount || 0,
+          allowedExits: MAX_ALLOWED_EXITS,
+          remainingExitAttempts,
+          showExitWarning: (existingAttempt.exitCount || 0) > 0,
         };
       }
     }
@@ -369,9 +368,57 @@ const MIN_CONFIDENCE_BY_LABEL: Record<string, number> = {
 const VIOLATION_DEDUPE_WINDOW_MS = Number(process.env.PROCTORING_DEDUPE_WINDOW_MS || 15000);
 const LOOKING_AWAY_WINDOW_MS = Number(process.env.PROCTORING_LOOKING_AWAY_WINDOW_MS || 45000);
 const LOOKING_AWAY_MIN_EVENTS = Number(process.env.PROCTORING_LOOKING_AWAY_MIN_EVENTS || 3);
+const NO_PERSON_STARTUP_GRACE_MS = Number(process.env.PROCTORING_NO_PERSON_STARTUP_GRACE_MS || 20000);
+const HEARTBEAT_TIMEOUT_MS = Number(process.env.ATTEMPT_HEARTBEAT_TIMEOUT_MS || 25000);
+const EXIT_INCREMENT_DEDUPE_MS = Number(process.env.ATTEMPT_EXIT_INCREMENT_DEDUPE_MS || 8000);
+const MAX_ALLOWED_EXITS = Number(process.env.ATTEMPT_MAX_ALLOWED_EXITS || 2);
+
+type SubmitReason = 'manual' | 'timer_expired' | 'exit_limit' | 'heartbeat_timeout';
 
 function getRequiredConfidence(label: string): number {
   return MIN_CONFIDENCE_BY_LABEL[label] ?? DEFAULT_MIN_CONFIDENCE;
+}
+
+function getAttemptStartTime(attempt: any): Date | undefined {
+  return attempt.startTime || attempt.startedAt || attempt.createdAt;
+}
+
+function getRemainingTimeSeconds(attempt: any, now = new Date()): number {
+  const attemptStartTime = getAttemptStartTime(attempt);
+  if (!attemptStartTime || typeof attempt.duration !== 'number') return 0;
+
+  const elapsedSeconds = Math.floor((now.getTime() - new Date(attemptStartTime).getTime()) / 1000);
+  return Math.max(0, attempt.duration - elapsedSeconds);
+}
+
+function hasTimerExpired(attempt: any, now = new Date()): boolean {
+  return getRemainingTimeSeconds(attempt, now) <= 0;
+}
+
+function shouldIncrementExitCount(attempt: any, at: Date) {
+  const lastHeartbeatAt = attempt.lastHeartbeatAt ? new Date(attempt.lastHeartbeatAt).getTime() : 0;
+  const lastExitAt = attempt.lastExitAt ? new Date(attempt.lastExitAt).getTime() : 0;
+  const lastExitIncrementAt = attempt.lastExitIncrementAt ? new Date(attempt.lastExitIncrementAt).getTime() : 0;
+
+  if (lastHeartbeatAt && lastExitAt >= lastHeartbeatAt) {
+    return false;
+  }
+
+  if (lastExitIncrementAt && at.getTime() - lastExitIncrementAt < EXIT_INCREMENT_DEDUPE_MS) {
+    return false;
+  }
+
+  return true;
+}
+
+function isWithinAttemptStartupGrace(attempt: any, eventTime: Date): boolean {
+  const startedAtRaw = attempt?.startedAt || attempt?.createdAt;
+  if (!startedAtRaw) return false;
+
+  const startedAt = new Date(startedAtRaw);
+  if (Number.isNaN(startedAt.getTime())) return false;
+
+  return eventTime.getTime() - startedAt.getTime() < NO_PERSON_STARTUP_GRACE_MS;
 }
 
 async function saveEvidenceImageFromDataUrl(
@@ -477,17 +524,25 @@ export const processProctorChunk = async (req: Request, res: Response) => {
     // Ensure an exam attempt exists for this student & test so we can attach live frames
     let attempt = await ExamAttempt.findOne({ testId, studentId });
     if (!attempt) {
+      const test = await Test.findById(testId);
       // If the student hasn't explicitly started attempt yet, create one in-progress
       attempt = new ExamAttempt({
         testId,
         studentId,
         status: 'in-progress',
+        startTime: timestamp ? new Date(timestamp) : new Date(),
         startedAt: timestamp ? new Date(timestamp) : new Date(),
+        duration: Math.max(0, Math.round(((test?.duration || 60)) * 60)),
         totalScore: 0,
         trustScore: 100,
         totalViolations: 0,
         questionsAttempted: 0,
         answers: [],
+        partialAnswers: {},
+        exitCount: 0,
+        isSubmitted: false,
+        lastHeartbeatAt: logTimestamp,
+        lastActivityAt: logTimestamp,
       });
       await attempt.save();
       console.log(`[PROCTOR] Created new exam attempt for student ${studentId}`);
@@ -527,6 +582,15 @@ export const processProctorChunk = async (req: Request, res: Response) => {
 
       if (!hasFrameEvidence) {
         console.log(`[PROCTOR] Discarded violation (no image evidence): ${label}`);
+        return res.status(200).json({
+          message: 'Chunk processed successfully',
+          violationDetected: false,
+        });
+      }
+
+      // Camera warm-up can produce black frames and false "No Person Visible" detections.
+      if (label === 'No Person Visible' && isWithinAttemptStartupGrace(attempt, logTimestamp)) {
+        console.log(`[PROCTOR] Discarded violation (camera startup grace): ${label}`);
         return res.status(200).json({
           message: 'Chunk processed successfully',
           violationDetected: false,
@@ -671,27 +735,233 @@ export const startAttempt = async (req: Request, res: Response) => {
         testId,
         studentId,
         status: 'in-progress',
+        startTime: now,
         startedAt: now,
+        duration: Math.max(0, Math.round((test.duration || 60) * 60)),
         totalScore: 0,
         trustScore: 100,
         totalViolations: 0,
         questionsAttempted: 0,
         answers: [],
+        partialAnswers: {},
+        exitCount: 0,
+        isSubmitted: false,
+        lastHeartbeatAt: now,
+        lastActivityAt: now,
       });
     } else {
       // Ensure it's marked in-progress
       attempt.status = 'in-progress';
-      if (!attempt.startedAt) attempt.startedAt = now;
+      if (!attempt.startTime) attempt.startTime = attempt.startedAt || now;
+      if (!attempt.startedAt) attempt.startedAt = attempt.startTime || now;
+      if (typeof attempt.duration !== 'number') {
+        attempt.duration = Math.max(0, Math.round((test.duration || 60) * 60));
+      }
+      attempt.timeRemaining = getRemainingTimeSeconds(attempt, now);
+      attempt.lastHeartbeatAt = now;
+      attempt.lastActivityAt = now;
     }
 
     await attempt.save();
 
-    res.status(200).json({ message: 'Attempt started', attemptId: (attempt._id as any).toString(), status: attempt.status });
+    res.status(200).json({
+      message: 'Attempt started',
+      attemptId: (attempt._id as any).toString(),
+      status: attempt.status,
+      remainingTime: getRemainingTimeSeconds(attempt, now),
+      exitCount: attempt.exitCount || 0,
+      allowedExits: MAX_ALLOWED_EXITS,
+    });
   } catch (error: any) {
     console.error('Start attempt error:', error);
     res.status(500).json({ message: 'Failed to start attempt', error: error?.message });
   }
 };
+
+async function processAttemptAnswers(
+  attempt: any,
+  testId: string,
+  answers: any,
+  endTime: Date | string | undefined,
+  submitReason: SubmitReason = 'manual'
+) {
+  const test = await Test.findById(testId).populate('questionIds');
+  if (!test) throw new Error('Test not found');
+
+  const questionsMap: Record<string, any> = {};
+  const orderedQuestionIds: string[] = [];
+  (test.questionIds as any[]).forEach((q: any) => {
+    const qId = (q._id as any).toString();
+    questionsMap[qId] = q;
+    orderedQuestionIds.push(qId);
+  });
+
+  const normalizedAnswers: Record<string, any> = {};
+  Object.entries(answers || {}).forEach(([qKey, value]) => {
+    let normalizedKey = qKey;
+    if (!questionsMap[normalizedKey] && /^[0-9]+$/.test(qKey)) {
+      const numericIndex = Number(qKey);
+      const mappedId = orderedQuestionIds[numericIndex - 1];
+      if (mappedId) normalizedKey = mappedId;
+    }
+    normalizedAnswers[normalizedKey] = value;
+  });
+
+  let totalScore = 0;
+  const processedAnswers = Object.keys(normalizedAnswers).map((qId: string) => {
+    const question = questionsMap[qId];
+    if (!question) return null;
+
+    const submittedAns = normalizedAnswers[qId];
+    let isCorrect = false;
+    let marksObtained = 0;
+
+    if (question.type === 'mcq') {
+      const optionOrder = (attempt.optionOrderByQuestion || {})[qId];
+      let normalizedSubmitted = Number(submittedAns);
+      if (Array.isArray(optionOrder) && optionOrder.length > normalizedSubmitted && normalizedSubmitted >= 0) {
+        normalizedSubmitted = Number(optionOrder[normalizedSubmitted]);
+      }
+      if (normalizedSubmitted === Number(question.correctAnswer)) {
+        isCorrect = true;
+        marksObtained = question.marks || 1;
+      }
+    } else if (question.type === 'coding') {
+      isCorrect = false;
+      marksObtained = 0;
+    }
+
+    totalScore += marksObtained;
+
+    return {
+      questionId: question._id,
+      answer: submittedAns,
+      isCorrect,
+      marksObtained
+    };
+  }).filter(Boolean);
+
+  attempt.status = 'submitted';
+  attempt.isSubmitted = true;
+  attempt.endedAt = endTime ? new Date(endTime) : new Date();
+  attempt.answers = processedAnswers as any;
+  attempt.partialAnswers = normalizedAnswers;
+  attempt.totalScore = totalScore;
+  attempt.questionsAttempted = processedAnswers.length;
+  attempt.timeRemaining = 0;
+  attempt.submissionReason = submitReason;
+  attempt.lastActivityAt = attempt.endedAt;
+  
+  return totalScore;
+}
+
+async function autoSubmitAttemptIfNeeded(
+  attempt: any,
+  reason: Exclude<SubmitReason, 'manual'>,
+  eventAt = new Date()
+) {
+  if (!attempt || attempt.status === 'submitted' || attempt.isSubmitted) {
+    return { submitted: false, reason: null as SubmitReason | null };
+  }
+
+  try {
+    await processAttemptAnswers(
+      attempt,
+      (attempt.testId as any).toString(),
+      attempt.partialAnswers || {},
+      eventAt,
+      reason
+    );
+  } catch (error) {
+    console.error(`Failed to auto-submit attempt (${reason}):`, error);
+    attempt.status = 'submitted';
+    attempt.isSubmitted = true;
+    attempt.endedAt = eventAt;
+    attempt.timeRemaining = 0;
+    attempt.submissionReason = reason;
+  }
+
+  await AttemptEventLog.create({
+    attemptId: attempt._id,
+    studentId: attempt.studentId,
+    testId: attempt.testId,
+    eventType: 'auto_submitted',
+    timestamp: eventAt,
+    meta: { reason },
+  });
+
+  await attempt.save();
+  return { submitted: true, reason };
+}
+
+async function markAttemptExit(
+  attempt: any,
+  source: 'pagehide' | 'visibilitychange' | 'heartbeat_timeout' | 'navigation' | 'legacy_logout',
+  eventAt = new Date()
+) {
+  if (!attempt || attempt.status === 'submitted' || attempt.isSubmitted) {
+    return { incremented: false, autoSubmitted: false, exitCount: attempt?.exitCount || 0 };
+  }
+
+  attempt.lastActivityAt = eventAt;
+
+  if (!shouldIncrementExitCount(attempt, eventAt)) {
+    await attempt.save();
+    return { incremented: false, autoSubmitted: false, exitCount: attempt.exitCount || 0 };
+  }
+
+  attempt.exitCount = (attempt.exitCount || 0) + 1;
+  attempt.lastExitAt = eventAt;
+  attempt.lastExitIncrementAt = eventAt;
+
+  await AttemptEventLog.create({
+    attemptId: attempt._id,
+    studentId: attempt.studentId,
+    testId: attempt.testId,
+    eventType: 'session_exit',
+    timestamp: eventAt,
+    meta: { source, exitCount: attempt.exitCount },
+  });
+
+  if ((attempt.exitCount || 0) > MAX_ALLOWED_EXITS) {
+    const result = await autoSubmitAttemptIfNeeded(attempt, source === 'heartbeat_timeout' ? 'heartbeat_timeout' : 'exit_limit', eventAt);
+    return { incremented: true, autoSubmitted: result.submitted, exitCount: attempt.exitCount || 0 };
+  }
+
+  await attempt.save();
+  return { incremented: true, autoSubmitted: false, exitCount: attempt.exitCount || 0 };
+}
+
+async function enforceAttemptState(attempt: any, now = new Date()) {
+  if (!attempt || attempt.status === 'submitted' || attempt.isSubmitted) {
+    return { autoSubmitted: false, reason: null as SubmitReason | null };
+  }
+
+  if (hasTimerExpired(attempt, now)) {
+    const result = await autoSubmitAttemptIfNeeded(attempt, 'timer_expired', now);
+    return { autoSubmitted: result.submitted, reason: result.reason };
+  }
+
+  if (attempt.lastHeartbeatAt) {
+    const heartbeatAgeMs = now.getTime() - new Date(attempt.lastHeartbeatAt).getTime();
+    if (heartbeatAgeMs > HEARTBEAT_TIMEOUT_MS) {
+      const result = await markAttemptExit(attempt, 'heartbeat_timeout', now);
+      return { autoSubmitted: result.autoSubmitted, reason: result.autoSubmitted ? 'heartbeat_timeout' : null };
+    }
+  }
+
+  attempt.timeRemaining = getRemainingTimeSeconds(attempt, now);
+  await attempt.save();
+  return { autoSubmitted: false, reason: null };
+}
+
+export async function runAttemptLifecycleSweep() {
+  const attempts = await ExamAttempt.find({ status: 'in-progress' });
+  const now = new Date();
+  for (const attempt of attempts) {
+    await enforceAttemptState(attempt, now);
+  }
+}
 
 export const submitTest = async (req: Request, res: Response) => {
   try {
@@ -699,7 +969,7 @@ export const submitTest = async (req: Request, res: Response) => {
       return res.status(503).json({ message: 'Database connection not available', error: 'DATABASE_UNAVAILABLE' });
     }
 
-    let { studentId, testId, answers, startTime, endTime, violations } = req.body;
+    let { studentId, testId, answers, startTime, endTime, violations, submitReason } = req.body;
 
     if (!studentId || studentId === 'unknown') {
       const user = (req as any).user;
@@ -713,87 +983,35 @@ export const submitTest = async (req: Request, res: Response) => {
     // Try to find existing attempt first to avoid duplicates if possible, though schema handles unique
     let attempt = await ExamAttempt.findOne({ studentId, testId });
     if (!attempt) {
+      const test = await Test.findById(testId);
       // Should ideally exist if 'start-test' was called, but if not create one
       attempt = new ExamAttempt({
         studentId,
         testId,
+        startTime: startTime ? new Date(startTime) : new Date(),
         startedAt: startTime ? new Date(startTime) : new Date(),
-        status: 'in-progress'
+        duration: Math.max(0, Math.round(((test?.duration || 60)) * 60)),
+        status: 'in-progress',
+        partialAnswers: answers || {},
+        lastHeartbeatAt: new Date(),
+        lastActivityAt: new Date(),
       });
     }
 
-    // Process answers - calculate score for MCQs
-    // We need to fetch the test questions to grade
-    const test = await Test.findById(testId).populate('questionIds');
-    if (!test) return res.status(404).json({ message: 'Test not found' });
-
-    const questionsMap: Record<string, any> = {};
-    const orderedQuestionIds: string[] = [];
-    (test.questionIds as any[]).forEach((q: any) => {
-      const qId = (q._id as any).toString();
-      questionsMap[qId] = q;
-      orderedQuestionIds.push(qId);
-    });
-
-    const normalizedAnswers: Record<string, any> = {};
-    Object.entries(answers).forEach(([qKey, value]) => {
-      let normalizedKey = qKey;
-      if (!questionsMap[normalizedKey] && /^[0-9]+$/.test(qKey)) {
-        const numericIndex = Number(qKey);
-        const mappedId = orderedQuestionIds[numericIndex - 1];
-        if (mappedId) normalizedKey = mappedId;
-      }
-      normalizedAnswers[normalizedKey] = value;
-    });
-
-    let totalScore = 0;
-    const processedAnswers = Object.keys(normalizedAnswers).map((qId: string) => {
-      const question = questionsMap[qId];
-      if (!question) return null; // Should not happen
-
-      const submittedAns = normalizedAnswers[qId];
-
-      // Auto-grade MCQ
-      let isCorrect = false;
-      let marksObtained = 0;
-
-      if (question.type === 'mcq') {
-        const optionOrder = (attempt.optionOrderByQuestion || {})[qId];
-        let normalizedSubmitted = Number(submittedAns);
-        // Convert randomized option index back to original option index before grading
-        if (Array.isArray(optionOrder) && optionOrder.length > normalizedSubmitted && normalizedSubmitted >= 0) {
-          normalizedSubmitted = Number(optionOrder[normalizedSubmitted]);
-        }
-        if (normalizedSubmitted === Number(question.correctAnswer)) {
-          isCorrect = true;
-          marksObtained = question.marks || 1;
-        }
-      } else if (question.type === 'coding') {
-        // Coding questions are not auto-graded here (future improvement: run test cases server side)
-        // For now, mark as needs grading or null
-        isCorrect = false;
-        marksObtained = 0; // Or partial
-      }
-
-      totalScore += marksObtained;
-
-      return {
-        questionId: question._id,
-        answer: submittedAns,
-        isCorrect,
-        marksObtained
-      };
-    }).filter(Boolean);
-
-    // Save final attempt
-    attempt.status = 'submitted';
-    attempt.endedAt = endTime ? new Date(endTime) : new Date();
-    attempt.answers = processedAnswers as any;
-    attempt.totalScore = totalScore;
-    attempt.questionsAttempted = processedAnswers.length;
-    if (attempt.startedAt && attempt.endedAt) {
-      attempt.duration = Math.max(0, Math.round((attempt.endedAt.getTime() - attempt.startedAt.getTime()) / 60000));
+    await enforceAttemptState(attempt, new Date());
+    if (attempt.status === 'submitted' || attempt.isSubmitted) {
+      return res.status(409).json({ message: 'Test already submitted', error: 'TEST_ALREADY_SUBMITTED' });
     }
+
+    attempt.partialAnswers = answers || attempt.partialAnswers || {};
+    attempt.lastActivityAt = new Date();
+    const totalScore = await processAttemptAnswers(
+      attempt,
+      testId,
+      answers,
+      endTime,
+      submitReason === 'timer_expired' ? 'timer_expired' : 'manual'
+    );
 
     // Process violations if any sent from client (though usually they are streamed)
     if (Array.isArray(violations) && violations.length > 0) {
@@ -805,6 +1023,11 @@ export const submitTest = async (req: Request, res: Response) => {
             const label = mapViolationTypeToLabel(violation.type || violation.label || 'Suspicious behavior detected');
             const severity = violation.severity || 'medium';
             const timestamp = violation.timestamp ? new Date(violation.timestamp) : new Date();
+
+            if (label === 'No Person Visible' && isWithinAttemptStartupGrace(attempt, timestamp)) {
+              return null;
+            }
+
             let imageId: mongoose.Types.ObjectId | undefined;
             try {
               imageId = await saveEvidenceImageFromDataUrl(latestFrame, {
@@ -859,7 +1082,7 @@ export const saveProgress = async (req: Request, res: Response) => {
       return res.status(503).json({ message: 'Database connection not available', error: 'DATABASE_UNAVAILABLE' });
     }
 
-    let { studentId, testId, currentQuestionIndex, timeRemaining, answers } = req.body;
+    let { studentId, testId, currentQuestionIndex, answers } = req.body;
 
     if (!studentId || studentId === 'unknown') {
       const user = (req as any).user;
@@ -873,24 +1096,31 @@ export const saveProgress = async (req: Request, res: Response) => {
     // Find or create the attempt
     let attempt = await ExamAttempt.findOne({ studentId, testId });
     if (!attempt) {
+      const test = await Test.findById(testId);
       // Create attempt if it doesn't exist
       attempt = new ExamAttempt({
         testId,
         studentId,
         status: 'in-progress',
+        startTime: new Date(),
         startedAt: new Date(),
+        duration: Math.max(0, Math.round(((test?.duration || 60)) * 60)),
         totalScore: 0,
         trustScore: 100,
         totalViolations: 0,
         questionsAttempted: 0,
         answers: [],
+        exitCount: 0,
+        isSubmitted: false,
         currentQuestionIndex: currentQuestionIndex || 0,
-        timeRemaining,
         partialAnswers: answers || {},
+        lastHeartbeatAt: new Date(),
+        lastActivityAt: new Date(),
       });
     }
 
-    if (attempt.status === 'submitted') {
+    await enforceAttemptState(attempt, new Date());
+    if (attempt.status === 'submitted' || attempt.isSubmitted) {
       return res.status(409).json({ message: 'Test already submitted', error: 'TEST_ALREADY_SUBMITTED' });
     }
 
@@ -898,29 +1128,37 @@ export const saveProgress = async (req: Request, res: Response) => {
     if (currentQuestionIndex !== undefined) {
       attempt.currentQuestionIndex = currentQuestionIndex;
     }
-    if (timeRemaining !== undefined) {
-      attempt.timeRemaining = timeRemaining;
-    }
     if (answers !== undefined) {
       attempt.partialAnswers = answers;
     }
+    attempt.timeRemaining = getRemainingTimeSeconds(attempt, new Date());
+    attempt.lastActivityAt = new Date();
 
     await attempt.save();
 
-    res.status(200).json({ message: 'Progress saved successfully' });
+    res.status(200).json({
+      message: 'Progress saved successfully',
+      remainingTime: attempt.timeRemaining,
+      exitCount: attempt.exitCount || 0,
+      allowedExits: MAX_ALLOWED_EXITS,
+    });
   } catch (error: any) {
     console.error('Save progress error:', error);
     res.status(500).json({ message: 'Failed to save progress', error: error?.message });
   }
 };
 
-export const recordLogout = async (req: Request, res: Response) => {
+export const recordExit = async (req: Request, res: Response) => {
   try {
     if (mongoose.connection.readyState !== 1) {
       return res.status(503).json({ message: 'Database connection not available', error: 'DATABASE_UNAVAILABLE' });
     }
 
-    let { studentId, testId } = req.body;
+    let { studentId, testId, source } = req.body as {
+      studentId?: string;
+      testId?: string;
+      source?: 'pagehide' | 'visibilitychange' | 'navigation' | 'legacy_logout';
+    };
 
     // If studentId not supplied, get it from JWT
     if (!studentId || studentId === 'unknown') {
@@ -938,18 +1176,93 @@ export const recordLogout = async (req: Request, res: Response) => {
       return res.status(404).json({ message: 'Attempt not found', error: 'ATTEMPT_NOT_FOUND' });
     }
 
-    if (attempt.status === 'submitted') {
+    if (attempt.status === 'submitted' || attempt.isSubmitted) {
       return res.status(409).json({ message: 'Test already submitted', error: 'TEST_ALREADY_SUBMITTED' });
     }
 
-    // Record logout time
-    attempt.lastLogoutAt = new Date();
+    const result = await markAttemptExit(attempt, source || 'legacy_logout', new Date());
+    res.status(200).json({
+      message: result.autoSubmitted ? 'Test auto-submitted due to exit limit' : 'Exit recorded successfully',
+      exitCount: result.exitCount,
+      allowedExits: MAX_ALLOWED_EXITS,
+      autoSubmitted: result.autoSubmitted,
+    });
+  } catch (error: any) {
+    console.error('Record exit error:', error);
+    res.status(500).json({ message: 'Failed to record exit', error: error?.message });
+  }
+};
+
+export const recordHeartbeat = async (req: Request, res: Response) => {
+  try {
+    if (mongoose.connection.readyState !== 1) {
+      return res.status(503).json({ message: 'Database connection not available', error: 'DATABASE_UNAVAILABLE' });
+    }
+
+    let { studentId, testId, attemptId, currentQuestionIndex, visibilityState } = req.body as {
+      studentId?: string;
+      testId?: string;
+      attemptId?: string;
+      currentQuestionIndex?: number;
+      visibilityState?: string;
+    };
+
+    if (!studentId || studentId === 'unknown') {
+      const user = (req as any).user;
+      if (user?.id) studentId = user.id;
+    }
+
+    if (!studentId || !testId) {
+      return res.status(400).json({ message: 'Missing required fields: studentId, testId', error: 'MISSING_FIELDS' });
+    }
+
+    let attempt = attemptId ? await ExamAttempt.findById(attemptId) : null;
+    if (!attempt) {
+      attempt = await ExamAttempt.findOne({ studentId, testId });
+    }
+    if (!attempt) {
+      return res.status(404).json({ message: 'Attempt not found', error: 'ATTEMPT_NOT_FOUND' });
+    }
+
+    await enforceAttemptState(attempt, new Date());
+    if (attempt.status === 'submitted' || attempt.isSubmitted) {
+      return res.status(409).json({
+        message: 'Test already submitted',
+        error: 'TEST_ALREADY_SUBMITTED',
+        autoSubmitted: true,
+        remainingTime: 0,
+      });
+    }
+
+    const now = new Date();
+    attempt.lastHeartbeatAt = now;
+    attempt.lastActivityAt = now;
+    attempt.timeRemaining = getRemainingTimeSeconds(attempt, now);
+    if (currentQuestionIndex !== undefined) {
+      attempt.currentQuestionIndex = currentQuestionIndex;
+    }
     await attempt.save();
 
-    res.status(200).json({ message: 'Logout recorded successfully' });
+    await AttemptEventLog.create({
+      attemptId: attempt._id,
+      studentId: attempt.studentId,
+      testId: attempt.testId,
+      eventType: 'heartbeat',
+      timestamp: now,
+      questionIndex: currentQuestionIndex,
+      meta: { visibilityState: visibilityState || 'unknown' },
+    });
+
+    res.status(200).json({
+      message: 'Heartbeat recorded',
+      remainingTime: attempt.timeRemaining,
+      exitCount: attempt.exitCount || 0,
+      allowedExits: MAX_ALLOWED_EXITS,
+      autoSubmitted: false,
+    });
   } catch (error: any) {
-    console.error('Record logout error:', error);
-    res.status(500).json({ message: 'Failed to record logout', error: error?.message });
+    console.error('Record heartbeat error:', error);
+    res.status(500).json({ message: 'Failed to record heartbeat', error: error?.message });
   }
 };
 
@@ -976,16 +1289,24 @@ export const reportMonitorRisk = async (req: Request, res: Response) => {
 
     let attempt = await ExamAttempt.findOne({ testId, studentId });
     if (!attempt) {
+      const test = await Test.findById(testId);
       attempt = new ExamAttempt({
         testId,
         studentId,
         status: 'in-progress',
+        startTime: new Date(),
         startedAt: new Date(),
+        duration: Math.max(0, Math.round(((test?.duration || 60)) * 60)),
         totalScore: 0,
         trustScore: 100,
         totalViolations: 0,
         questionsAttempted: 0,
         answers: [],
+        partialAnswers: {},
+        exitCount: 0,
+        isSubmitted: false,
+        lastHeartbeatAt: new Date(),
+        lastActivityAt: new Date(),
       });
       await attempt.save();
     }
@@ -1076,16 +1397,24 @@ export const logActivityEvents = async (req: Request, res: Response) => {
       attempt = await ExamAttempt.findOne({ studentId, testId });
     }
     if (!attempt) {
+      const test = await Test.findById(testId);
       attempt = await ExamAttempt.create({
         testId,
         studentId,
         status: 'in-progress',
+        startTime: new Date(),
         startedAt: new Date(),
+        duration: Math.max(0, Math.round(((test?.duration || 60)) * 60)),
         totalScore: 0,
         trustScore: 100,
         totalViolations: 0,
         questionsAttempted: 0,
         answers: [],
+        partialAnswers: {},
+        exitCount: 0,
+        isSubmitted: false,
+        lastHeartbeatAt: new Date(),
+        lastActivityAt: new Date(),
       });
     }
 

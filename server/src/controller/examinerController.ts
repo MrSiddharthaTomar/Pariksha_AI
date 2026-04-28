@@ -772,7 +772,9 @@ export const getStudentReport = async (req: Request, res: Response) => {
     const totalPossibleMarks = questionResults.reduce((acc, q) => acc + (q.marks ?? 0), 0);
     const totalScore = typeof attempt.totalScore === 'number' ? attempt.totalScore : answers.reduce((acc: number, answer: any) => acc + (answer?.marksObtained ?? 0), 0);
     const scorePercent = totalPossibleMarks > 0 ? Math.round((totalScore * 100) / totalPossibleMarks) : 0;
-    const computedDuration = attempt.duration ?? (attempt.startedAt && attempt.endedAt ? Math.max(0, Math.round((attempt.endedAt.getTime() - attempt.startedAt.getTime()) / 60000)) : undefined);
+    const computedDuration = attempt.startedAt && attempt.endedAt
+      ? Math.max(0, Math.round((attempt.endedAt.getTime() - attempt.startedAt.getTime()) / 60000))
+      : undefined;
 
     res.status(200).json({
       student: {

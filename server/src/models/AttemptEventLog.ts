@@ -8,7 +8,10 @@ export type AttemptEventType =
   | 'fullscreen_enter'
   | 'fullscreen_exit'
   | 'question_time_spent'
-  | 'warning_shown';
+  | 'warning_shown'
+  | 'heartbeat'
+  | 'session_exit'
+  | 'auto_submitted';
 
 export interface IAttemptEventLog extends Document {
   attemptId: mongoose.Types.ObjectId;
@@ -31,7 +34,7 @@ const AttemptEventLogSchema = new Schema<IAttemptEventLog>(
     testId: { type: Schema.Types.ObjectId, ref: 'Test', required: true, index: true },
     eventType: {
       type: String,
-      enum: ['tab_hidden', 'tab_visible', 'window_blur', 'window_focus', 'fullscreen_enter', 'fullscreen_exit', 'question_time_spent', 'warning_shown'],
+      enum: ['tab_hidden', 'tab_visible', 'window_blur', 'window_focus', 'fullscreen_enter', 'fullscreen_exit', 'question_time_spent', 'warning_shown', 'heartbeat', 'session_exit', 'auto_submitted'],
       required: true,
     },
     timestamp: { type: Date, required: true, index: true },

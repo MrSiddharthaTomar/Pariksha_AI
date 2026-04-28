@@ -13,6 +13,7 @@ export interface IExamAttempt extends Document {
   testId: mongoose.Types.ObjectId;
   studentId: mongoose.Types.ObjectId;
   status: ExamAttemptStatus;
+  startTime?: Date;
   startedAt?: Date;
   endedAt?: Date;
   duration?: number;
@@ -25,9 +26,13 @@ export interface IExamAttempt extends Document {
   currentQuestionIndex?: number;
   timeRemaining?: number;
   partialAnswers?: Record<string, any>;
-  // Session tracking for logout handling
-  lastLogoutAt?: Date;
-  sessionWarningsShown?: number;
+  exitCount?: number;
+  isSubmitted?: boolean;
+  lastHeartbeatAt?: Date;
+  lastActivityAt?: Date;
+  lastExitAt?: Date;
+  lastExitIncrementAt?: Date;
+  submissionReason?: 'manual' | 'timer_expired' | 'exit_limit' | 'heartbeat_timeout';
   // latest frame data uri for live monitoring (optional)
   latestFrame?: string;
   latestFrameAt?: Date;
@@ -53,6 +58,9 @@ const ExamAttemptSchema = new Schema<IExamAttempt>(
       type: String,
       enum: ['not-started', 'in-progress', 'submitted', 'blocked'],
       default: 'in-progress',
+    },
+    startTime: {
+      type: Date,
     },
     startedAt: {
       type: Date,
@@ -106,13 +114,29 @@ const ExamAttemptSchema = new Schema<IExamAttempt>(
       type: Schema.Types.Mixed,
       default: {},
     },
-    // Session tracking for logout handling
-    lastLogoutAt: {
-      type: Date,
-    },
-    sessionWarningsShown: {
+    exitCount: {
       type: Number,
       default: 0,
+    },
+    isSubmitted: {
+      type: Boolean,
+      default: false,
+    },
+    lastHeartbeatAt: {
+      type: Date,
+    },
+    lastActivityAt: {
+      type: Date,
+    },
+    lastExitAt: {
+      type: Date,
+    },
+    lastExitIncrementAt: {
+      type: Date,
+    },
+    submissionReason: {
+      type: String,
+      enum: ['manual', 'timer_expired', 'exit_limit', 'heartbeat_timeout'],
     },
     // Store last captured frame (base64 data URI) for live monitoring
     latestFrame: {
