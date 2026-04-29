@@ -121,7 +121,7 @@ ANTHROPIC_API_KEY=
 JWT_SECRET=
 JWT_EXPIRES_IN=
 ADMIN_ACCESS_KEY=
-
+ATTEMPT_MAX_ALLOWED_EXITS=
 
 # CRITICAL: Point to your Python environment with ML dependencies installed
 # Windows (Conda):

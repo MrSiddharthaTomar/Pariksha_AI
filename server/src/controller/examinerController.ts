@@ -547,16 +547,29 @@ export const getTestResults = async (req: Request, res: Response) => {
     // Get all attempts for this test
     const attempts = await ExamAttempt.find({ testId: test._id }).populate('studentId', 'fullName email');
 
+    // Calculate test total possible marks
+    const questionDocs = await Question.find({ _id: { $in: test.questionIds || [] } }).lean();
+    const testTotalPossibleMarks = questionDocs.reduce((acc: number, q: any) => acc + (q.marks ?? 1), 0);
+
     const students = await Promise.all(attempts.map(async (a: any) => {
       const student = a.studentId as any;
       const violations = await ProctoringLog.countDocuments({ attemptId: a._id, verdict: { $ne: 'invalid' } });
       const fallbackScore = (a.answers || []).reduce((acc: number, answer: any) => acc + (answer?.marksObtained ?? 0), 0);
+      const rawScore = typeof a.totalScore === 'number' ? a.totalScore : fallbackScore;
+      
+      let attemptTotalPossibleMarks = testTotalPossibleMarks;
+      if (attemptTotalPossibleMarks === 0 && a.answers && a.answers.length > 0) {
+        attemptTotalPossibleMarks = a.answers.length;
+      }
+      
+      const scorePercent = attemptTotalPossibleMarks > 0 ? Math.round((rawScore * 100) / attemptTotalPossibleMarks) : 0;
+
       return {
         attemptId: (a._id as any).toString(),
         studentId: (student?._id as any)?.toString() || null,
         name: student?.fullName || student?.name || 'Unknown',
         email: student?.email || 'unknown',
-        actualScore: typeof a.totalScore === 'number' ? a.totalScore : fallbackScore,
+        actualScore: scorePercent,
         trustScore: a.trustScore ?? 100,
         violationsCount: a.totalViolations ?? violations ?? 0,
         status: a.status,
@@ -731,11 +744,22 @@ export const getStudentReport = async (req: Request, res: Response) => {
         correctAnswer = question.correctAnswer;
 
         if (question.type === 'mcq') {
-          const selectedIndex = typeof rawAnswer === 'number' ? rawAnswer : Number(rawAnswer);
+          let selectedIndex = typeof rawAnswer === 'number' ? rawAnswer : Number(rawAnswer);
+          
+          // Un-randomize the selected index if option order was randomized for this attempt
+          if (questionId) {
+            const optionOrder = (attempt as any).optionOrderByQuestion?.[questionId];
+            if (Array.isArray(optionOrder) && optionOrder.length > selectedIndex && selectedIndex >= 0) {
+              selectedIndex = Number(optionOrder[selectedIndex]);
+            }
+          }
+
           const correctIndex = typeof question.correctAnswer === 'number' ? question.correctAnswer : Number(question.correctAnswer);
           studentAnswerText = Number.isFinite(selectedIndex) ? String(question.options?.[selectedIndex] ?? rawAnswer) : String(rawAnswer);
           correctAnswerText = Number.isFinite(correctIndex) ? String(question.options?.[correctIndex] ?? question.correctAnswer) : String(question.correctAnswer ?? 'Not available');
-          isCorrect = Number.isFinite(selectedIndex) && selectedIndex === correctIndex;
+          
+          // Rely on the backend's scored isCorrect if available, else fallback to calculation
+          isCorrect = answer?.isCorrect ?? (Number.isFinite(selectedIndex) && selectedIndex === correctIndex);
           status = isCorrect ? 'correct' : 'incorrect';
         } else {
           studentAnswerText = typeof rawAnswer === 'string' ? rawAnswer : JSON.stringify(rawAnswer || '');

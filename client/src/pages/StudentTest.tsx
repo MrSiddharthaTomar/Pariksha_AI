@@ -1173,7 +1173,7 @@ const StudentTest = () => {
       <div className="bg-card border-b sticky top-0 z-40 shadow-md">
         <div className="container max-w-7xl mx-auto py-3 px-4">
           <div className="mb-3 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
-            You have {Math.max(0, allowedExits - exitCount)} remaining attempts before auto-submission.
+            Note: Please don't refresh the page or exit the page or your test will be auto submitted.
           </div>
           {showFullscreenWarning && (
             <div className="mb-3 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900 flex items-center justify-between gap-3">

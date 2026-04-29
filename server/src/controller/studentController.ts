@@ -371,7 +371,7 @@ const LOOKING_AWAY_MIN_EVENTS = Number(process.env.PROCTORING_LOOKING_AWAY_MIN_E
 const NO_PERSON_STARTUP_GRACE_MS = Number(process.env.PROCTORING_NO_PERSON_STARTUP_GRACE_MS || 20000);
 const HEARTBEAT_TIMEOUT_MS = Number(process.env.ATTEMPT_HEARTBEAT_TIMEOUT_MS || 25000);
 const EXIT_INCREMENT_DEDUPE_MS = Number(process.env.ATTEMPT_EXIT_INCREMENT_DEDUPE_MS || 8000);
-const MAX_ALLOWED_EXITS = Number(process.env.ATTEMPT_MAX_ALLOWED_EXITS || 2);
+const MAX_ALLOWED_EXITS = Number(process.env.ATTEMPT_MAX_ALLOWED_EXITS || 4);
 
 type SubmitReason = 'manual' | 'timer_expired' | 'exit_limit' | 'heartbeat_timeout';
 
@@ -851,7 +851,7 @@ async function processAttemptAnswers(
   attempt.timeRemaining = 0;
   attempt.submissionReason = submitReason;
   attempt.lastActivityAt = attempt.endedAt;
-  
+
   return totalScore;
 }
 
